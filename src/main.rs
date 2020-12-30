@@ -53,8 +53,16 @@ fn main() {
         // Get BAM tag `XM` calculated by Bismark aligner.
         let mut xm = record.aux(b"XM").unwrap().string()[start..end].to_vec();
 
-        // Reverse string if read was mapped in this way.
-        if record.is_reverse() {
+        // Get Bismark tags about read conversion (XR) and genome conversion (XG)
+        let xr = record.aux(b"XR").expect("Missing XR tag").string();
+        let xg = record.aux(b"XG").expect("Missing XG tag").string();
+
+        // XR=CT and XG=CT -> original top strand (OT)
+        // XR=GA and XG=CT -> complementary to original top strand (CTOT)
+        // XR=CT and XG=GA -> original bottom strand (OB)
+        // XR=GA and XG=GA -> complementary to original bottom strand (CTOB)
+        // Reverse string.
+        if (xr == b"CT" && xg == b"GA") || (xr == b"GA" && xg == b"CT") {
             xm.reverse();
         }
 
