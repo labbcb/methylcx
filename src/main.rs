@@ -42,16 +42,31 @@ fn main() {
         }
         total_valid += 1;
 
-        // Get read boundaries according to the CIGAR string.
-        // Soft-clipped bases (CIGAR S) are skipped from calculation.
-        // Soft-clips might occur at the beginning of the read or at the end.
-        // Only for alignments in local mode.
-        let cigar = record.cigar();
-        let start = cigar.leading_softclips() as usize;
-        let end = record.seq_len() - cigar.trailing_softclips() as usize;
+        // Generate a vector of boolean values according to CIGAR string.
+        // Soft-clips (S) and deletions (D) are marked to discard (false),
+        // otherwise keep those bases, which are normally matches (M).
+        // Each operation is replicated by its length. Example:
+        // CIGAR string 3M1D5M3S gives 111011111000.
+        let filter: Vec<bool> = record
+        .cigar()
+            .iter()
+            .flat_map(|c| {
+                let keep = c.char() != 'S' && c.char() != 'D';
+                vec![keep; c.len() as usize]
+            })
+            .collect();
 
         // Get BAM tag `XM` calculated by Bismark aligner.
-        let mut xm = record.aux(b"XM").unwrap().string()[start..end].to_vec();
+        // Keep only bases according to vector of boolean values.
+        let mut xm: Vec<u8> = record.aux(b"XM").unwrap().string()
+            .iter()
+            .zip(filter)
+            .filter(|(_, y)| *y)
+            .map(|(x, _)| *x)
+            .collect();
+
+        // Count sequence length frequency.
+        seq_len[xm.len() - 1] += 1;
 
         // Get Bismark tags about read conversion (XR) and genome conversion (XG)
         let xr = record.aux(b"XR").expect("Missing XR tag").string();
@@ -75,24 +90,21 @@ fn main() {
         //   h for not methylated C in CHH context (was converted)
         //   Z for methylated C in CpG context (was protected)
         //   z for not methylated C in CpG context (was converted)
-        for (i, b) in xm.iter().enumerate() {
-            if *b == b'X' {
+        for (i, b) in xm.into_iter().enumerate() {
+            if b == b'X' {
                 chg_m[i] += 1;
-            } else if *b == b'x' {
+            } else if b == b'x' {
                 chg_um[i] += 1;
-            } else if *b == b'Z' {
+            } else if b == b'Z' {
                 cpg_m[i] += 1;
-            } else if *b == b'z' {
+            } else if b == b'z' {
                 cpg_um[i] += 1;
-            } else if *b == b'H' {
+            } else if b == b'H' {
                 chh_m[i] += 1;
-            } else if *b == b'h' {
+            } else if b == b'h' {
                 chh_um[i] += 1;
             }
         }
-
-        // Count sequence length frequency.
-        seq_len[end - start - 1] += 1
     }
 
     // Print result tables in CSV format to stdout.
@@ -114,7 +126,9 @@ fn main() {
         total, total_valid, percent_valid
     );
     eprintln!("Length\tCount");
-    for (len, count) in seq_len.iter().filter(|count| **count > 0).enumerate() {
-        eprintln!("{}\t{}", len + 1, count);
+    for (len, count) in seq_len.into_iter().enumerate() {
+        if count > 0 {
+            eprintln!("{}\t{}", len + 1, count);
+        }
     }
 }
