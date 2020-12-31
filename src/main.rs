@@ -4,20 +4,12 @@ use std::env;
 fn main() {
     let input = env::args().nth(1).expect("Missing input file.");
 
-    // Get the length of the longest read.
-    // Iterate over the entire input file.
-    let max_len = bam::Reader::from_path(&input)
-        .unwrap()
-        .records()
-        .map(|record| record.unwrap().seq_len())
-        .max()
-        .unwrap();
-
     // Create a reader to input file.
     let mut bam = bam::Reader::from_path(&input).unwrap();
 
     // Create vectors to store context-aware cytosine methylation status.
     // Context are CpG, CHG and CHH.
+    let mut max_len = 0;
     let mut cpg_m = vec![0; max_len];
     let mut cpg_um = vec![0; max_len];
     let mut chg_m = vec![0; max_len];
@@ -42,32 +34,6 @@ fn main() {
         }
         total_valid += 1;
 
-        // Generate a vector of boolean values according to CIGAR string.
-        // Soft-clips (S) and deletions (D) are marked to discard (false),
-        // otherwise keep those bases, which are normally matches (M).
-        // Each operation is replicated by its length. Example:
-        // CIGAR string 3M1D5M3S gives 111011111000.
-        let filter: Vec<bool> = record
-        .cigar()
-            .iter()
-            .flat_map(|c| {
-                let keep = c.char() != 'S' && c.char() != 'D';
-                vec![keep; c.len() as usize]
-            })
-            .collect();
-
-        // Get BAM tag `XM` calculated by Bismark aligner.
-        // Keep only bases according to vector of boolean values.
-        let mut xm: Vec<u8> = record.aux(b"XM").unwrap().string()
-            .iter()
-            .zip(filter)
-            .filter(|(_, y)| *y)
-            .map(|(x, _)| *x)
-            .collect();
-
-        // Count sequence length frequency.
-        seq_len[xm.len() - 1] += 1;
-
         // Get Bismark tags about read conversion (XR) and genome conversion (XG)
         let xr = record.aux(b"XR").expect("Missing XR tag").string();
         let xg = record.aux(b"XG").expect("Missing XG tag").string();
@@ -76,10 +42,64 @@ fn main() {
         // XR=GA and XG=CT -> complementary to original top strand (CTOT)
         // XR=CT and XG=GA -> original bottom strand (OB)
         // XR=GA and XG=GA -> complementary to original bottom strand (CTOB)
-        // Reverse string.
-        if (xr == b"CT" && xg == b"GA") || (xr == b"GA" && xg == b"CT") {
+        // TODO: explain why reverse read when CT/GA or GA/CT
+        let reverse = (xr == b"CT" && xg == b"GA") || (xr == b"GA" && xg == b"CT");
+
+        // Get CIGAR string as mutable vector.
+        let mut cigar = record.cigar().to_vec();
+
+        // Reverse CIGAR string.
+        if reverse {
+            cigar.reverse();
+        }
+
+        // Generate a vector of boolean values according to CIGAR string.
+        // Soft-clips (S) and insertions (I) are marked to discard (false),
+        // otherwise keep those bases, which are normally matches (M).
+        // Each operation is replicated by its length. Example:
+        // CIGAR string 3M1D5M3S gives 111011111000.
+        let filter: Vec<bool> = cigar
+            .iter()
+            .flat_map(|c| {
+                let keep = c.char() != 'S' || c.char() != 'I';
+                vec![keep; c.len() as usize]
+            })
+            .collect();
+
+        // Get BAM tag `XM` calculated by Bismark aligner.
+        // Keep only bases according to vector of boolean values.
+        let mut xm: Vec<u8> = record
+            .aux(b"XM")
+            .unwrap()
+            .string()
+            .iter()
+            .zip(filter)
+            .filter(|(_, y)| *y)
+            .map(|(x, _)| *x)
+            .collect();
+
+        // Reverse read.
+        if reverse {
             xm.reverse();
         }
+
+        // Get length of match sequence (without soft-clips or deletions).
+        let len = xm.len();
+
+        // If it is greater than action maximun sequence length resise vectors.
+        if len > max_len {
+            max_len = len;
+            cpg_m.resize(max_len, 0);
+            cpg_um.resize(max_len, 0);
+            chg_m.resize(max_len, 0);
+            chg_um.resize(max_len, 0);
+            chh_m.resize(max_len, 0);
+            chh_um.resize(max_len, 0);
+            seq_len.resize(max_len, 0);
+        }
+
+        // Count sequence length frequency.
+        seq_len[len - 1] += 1;
 
         // Iterate over valid alignment bases (no soft-clips).
         // Count context-aware cytosine methylation states
