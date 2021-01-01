@@ -10,17 +10,24 @@ fn main() {
     // Create vectors to store context-aware cytosine methylation status.
     // Context are CpG, CHG and CHH.
     let mut max_len = 0;
-    let mut cpg_m = vec![0; max_len];
-    let mut cpg_um = vec![0; max_len];
-    let mut chg_m = vec![0; max_len];
-    let mut chg_um = vec![0; max_len];
-    let mut chh_m = vec![0; max_len];
-    let mut chh_um = vec![0; max_len];
+    let mut cpg_m = Vec::new();
+    let mut cpg_um = Vec::new();
+    let mut chg_m = Vec::new();
+    let mut chg_um = Vec::new();
+    let mut chh_m = Vec::new();
+    let mut chh_um = Vec::new();
 
     // Get statistics about mapped reads.
     let mut total = 0;
     let mut total_valid = 0;
-    let mut seq_len = vec![0; max_len];
+    let mut seq_len = Vec::new();
+
+    let mut total_cpg_m = 0;
+    let mut total_cpg_um = 0;
+    let mut total_chg_m = 0;
+    let mut total_chg_um = 0;
+    let mut total_chh_m = 0;
+    let mut total_chh_um = 0;
 
     // Iterate over the entire input file.
     let mut record = bam::Record::new();
@@ -113,16 +120,22 @@ fn main() {
         for (i, b) in xm.into_iter().enumerate() {
             if b == b'X' {
                 chg_m[i] += 1;
+                total_chg_m += 1;
             } else if b == b'x' {
                 chg_um[i] += 1;
+                total_chg_um += 1;
             } else if b == b'Z' {
                 cpg_m[i] += 1;
+                total_cpg_m += 1;
             } else if b == b'z' {
                 cpg_um[i] += 1;
+                total_cpg_um += 1;
             } else if b == b'H' {
                 chh_m[i] += 1;
+                total_chh_m += 1;
             } else if b == b'h' {
                 chh_um[i] += 1;
+                total_chh_um += 1;
             }
         }
     }
@@ -151,4 +164,19 @@ fn main() {
             eprintln!("{}\t{}", len + 1, count);
         }
     }
+
+    let total_cpg = total_cpg_m + total_cpg_um;
+    let total_chg = total_chg_m + total_chg_um;
+    let total_chh = total_chh_m + total_chh_um;
+    let total_c = total_cpg + total_chg + total_chh;
+    eprintln!("Total C: {}", total_c);
+    eprintln!("Total CpG: {} ({:.2} %)", total_cpg, total_cpg as f32 / total_c as f32 * 100.0);
+    eprintln!("Total CpG Methylated: {} ({:.2} %)", total_cpg_m, total_cpg_m as f32 / total_cpg as f32 * 100.0);
+    eprintln!("Total CpG Unmethylated: {} ({:.2} %)", total_cpg_um, total_cpg_um as f32 / total_cpg_um as f32 * 100.0);
+    eprintln!("Total CHG: {} ({:.2} %)", total_chg, total_chg as f32 / total_c as f32 * 100.0);
+    eprintln!("Total CHG Methylated: {} ({:.2} %)", total_chg_m, total_chg_m as f32 / total_chg as f32 * 100.0);
+    eprintln!("Total CHG Unmethylated: {} ({:.2} %)", total_chg_um, total_chg_um as f32 / total_chg_um as f32 * 100.0);
+    eprintln!("Total CHH: {} ({:.2} %)", total_chh, total_chh as f32 / total_c as f32 as f32 * 100.0);
+    eprintln!("Total CHH Methylated: {} ({:.2} %)", total_chh_m, total_chh_m as f32 / total_chh as f32 as f32 * 100.0);
+    eprintln!("Total CHH Unmethylated: {} ({:.2} %)", total_chh_um, total_chh_um as f32 / total_chh_um as f32 as f32 * 100.0);
 }
