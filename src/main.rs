@@ -1,11 +1,25 @@
+use clap::Clap;
 use rust_htslib::{bam, bam::Read};
-use std::env;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+
+#[derive(Clap)]
+struct Opts {
+    /// Input mapped reads by Bismark aligner (BAM/SAM/CRAM).
+    #[clap(parse(from_os_str))]
+    input: PathBuf,
+    /// Counts of (un)methylated and coverage across cycles (CSV).
+    #[clap(parse(from_os_str))]
+    mbias: PathBuf,
+}
 
 fn main() {
-    let input = env::args().nth(1).expect("Missing input file.");
+    let opts: Opts = Opts::parse();
 
     // Create a reader to input file.
-    let mut bam = bam::Reader::from_path(&input).unwrap();
+    let mut bam = bam::Reader::from_path(&opts.input).unwrap();
+    let mut mbias = File::create(opts.mbias).unwrap();
 
     // Create vectors to store context-aware cytosine methylation status.
     // Context are CpG, CHG and CHH.
@@ -20,7 +34,6 @@ fn main() {
     // Get statistics about mapped reads.
     let mut total = 0;
     let mut total_valid = 0;
-    let mut seq_len = Vec::new();
 
     let mut total_cpg_m = 0;
     let mut total_cpg_um = 0;
@@ -102,11 +115,7 @@ fn main() {
             chg_um.resize(max_len, 0);
             chh_m.resize(max_len, 0);
             chh_um.resize(max_len, 0);
-            seq_len.resize(max_len, 0);
         }
-
-        // Count sequence length frequency.
-        seq_len[len - 1] += 1;
 
         // Iterate over valid alignment bases (no soft-clips).
         // Count context-aware cytosine methylation states
@@ -142,41 +151,74 @@ fn main() {
 
     // Print result tables in CSV format to stdout.
     // Tables are merged as long format and discriminated by `Context` column.
-    println!("Context,Cycle,Methylated,Unmethylated,Coverage");
+    mbias
+        .write_all(b"Context,Cycle,Methylated,Unmethylated,Coverage\n")
+        .unwrap();
     for (i, (m, um)) in cpg_m.iter().zip(cpg_um).enumerate() {
-        println!("CpG,{},{},{},{}", i + 1, m, um, m + um);
+        writeln!(&mut mbias, "CpG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
     }
     for (i, (m, um)) in chg_m.iter().zip(chg_um).enumerate() {
-        println!("CHG,{},{},{},{}", i + 1, m, um, m + um);
+        writeln!(&mut mbias, "CHG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
     }
     for (i, (m, um)) in chh_m.iter().zip(chh_um).enumerate() {
-        println!("CHH,{},{},{},{}", i + 1, m, um, m + um);
+        writeln!(&mut mbias, "CHH,{},{},{},{}", i + 1, m, um, m + um).unwrap();
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
-    eprintln!(
-        "Total: {}\nValid: {} ({} %)",
-        total, total_valid, percent_valid
+    println!("Total:                  {}", total);
+    println!(
+        "Valid:                  {} ({} %)",
+        total_valid, percent_valid
     );
-    eprintln!("Length\tCount");
-    for (len, count) in seq_len.into_iter().enumerate() {
-        if count > 0 {
-            eprintln!("{}\t{}", len + 1, count);
-        }
-    }
 
     let total_cpg = total_cpg_m + total_cpg_um;
     let total_chg = total_chg_m + total_chg_um;
     let total_chh = total_chh_m + total_chh_um;
     let total_c = total_cpg + total_chg + total_chh;
-    eprintln!("Total C:                {}", total_c);
-    eprintln!("Total CpG:              {} ({:.2} %)", total_cpg, total_cpg as f32 / total_c as f32 * 100.0);
-    eprintln!("Total CpG Methylated:   {} ({:.2} %)", total_cpg_m, total_cpg_m as f32 / total_cpg as f32 * 100.0);
-    eprintln!("Total CpG Unmethylated: {} ({:.2} %)", total_cpg_um, total_cpg_um as f32 / total_cpg as f32 * 100.0);
-    eprintln!("Total CHG:              {} ({:.2} %)", total_chg, total_chg as f32 / total_c as f32 * 100.0);
-    eprintln!("Total CHG Methylated:   {} ({:.2} %)", total_chg_m, total_chg_m as f32 / total_chg as f32 * 100.0);
-    eprintln!("Total CHG Unmethylated: {} ({:.2} %)", total_chg_um, total_chg_um as f32 / total_chg as f32 * 100.0);
-    eprintln!("Total CHH:              {} ({:.2} %)", total_chh, total_chh as f32 / total_c as f32 as f32 * 100.0);
-    eprintln!("Total CHH Methylated:   {} ({:.2} %)", total_chh_m, total_chh_m as f32 / total_chh as f32 as f32 * 100.0);
-    eprintln!("Total CHH Unmethylated: {} ({:.2} %)", total_chh_um, total_chh_um as f32 / total_chh as f32 as f32 * 100.0);
+    println!("Total C:                {}", total_c);
+    println!(
+        "Total CpG:              {} ({:.2} %)",
+        total_cpg,
+        total_cpg as f32 / total_c as f32 * 100.0
+    );
+    println!(
+        "Total CpG Methylated:   {} ({:.2} %)",
+        total_cpg_m,
+        total_cpg_m as f32 / total_cpg as f32 * 100.0
+    );
+    println!(
+        "Total CpG Unmethylated: {} ({:.2} %)",
+        total_cpg_um,
+        total_cpg_um as f32 / total_cpg as f32 * 100.0
+    );
+    println!(
+        "Total CHG:              {} ({:.2} %)",
+        total_chg,
+        total_chg as f32 / total_c as f32 * 100.0
+    );
+    println!(
+        "Total CHG Methylated:   {} ({:.2} %)",
+        total_chg_m,
+        total_chg_m as f32 / total_chg as f32 * 100.0
+    );
+    println!(
+        "Total CHG Unmethylated: {} ({:.2} %)",
+        total_chg_um,
+        total_chg_um as f32 / total_chg as f32 * 100.0
+    );
+    println!(
+        "Total CHH:              {} ({:.2} %)",
+        total_chh,
+        total_chh as f32 / total_c as f32 as f32 * 100.0
+    );
+    println!(
+        "Total CHH Methylated:   {} ({:.2} %)",
+        total_chh_m,
+        total_chh_m as f32 / total_chh as f32 as f32 * 100.0
+    );
+    println!(
+        "Total CHH Unmethylated: {} ({:.2} %)",
+        total_chh_um,
+        total_chh_um as f32 / total_chh as f32 as f32 * 100.0
+    );
 }
