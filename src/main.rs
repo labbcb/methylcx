@@ -169,14 +169,14 @@ fn main() {
     let total_chg = total_chg_m + total_chg_um;
     let total_chh = total_chh_m + total_chh_um;
     let total_c = total_cpg + total_chg + total_chh;
-    eprintln!("Total C: {}", total_c);
-    eprintln!("Total CpG: {} ({:.2} %)", total_cpg, total_cpg as f32 / total_c as f32 * 100.0);
-    eprintln!("Total CpG Methylated: {} ({:.2} %)", total_cpg_m, total_cpg_m as f32 / total_cpg as f32 * 100.0);
-    eprintln!("Total CpG Unmethylated: {} ({:.2} %)", total_cpg_um, total_cpg_um as f32 / total_cpg_um as f32 * 100.0);
-    eprintln!("Total CHG: {} ({:.2} %)", total_chg, total_chg as f32 / total_c as f32 * 100.0);
-    eprintln!("Total CHG Methylated: {} ({:.2} %)", total_chg_m, total_chg_m as f32 / total_chg as f32 * 100.0);
-    eprintln!("Total CHG Unmethylated: {} ({:.2} %)", total_chg_um, total_chg_um as f32 / total_chg_um as f32 * 100.0);
-    eprintln!("Total CHH: {} ({:.2} %)", total_chh, total_chh as f32 / total_c as f32 as f32 * 100.0);
-    eprintln!("Total CHH Methylated: {} ({:.2} %)", total_chh_m, total_chh_m as f32 / total_chh as f32 as f32 * 100.0);
-    eprintln!("Total CHH Unmethylated: {} ({:.2} %)", total_chh_um, total_chh_um as f32 / total_chh_um as f32 as f32 * 100.0);
+    eprintln!("Total C:                {}", total_c);
+    eprintln!("Total CpG:              {} ({:.2} %)", total_cpg, total_cpg as f32 / total_c as f32 * 100.0);
+    eprintln!("Total CpG Methylated:   {} ({:.2} %)", total_cpg_m, total_cpg_m as f32 / total_cpg as f32 * 100.0);
+    eprintln!("Total CpG Unmethylated: {} ({:.2} %)", total_cpg_um, total_cpg_um as f32 / total_cpg as f32 * 100.0);
+    eprintln!("Total CHG:              {} ({:.2} %)", total_chg, total_chg as f32 / total_c as f32 * 100.0);
+    eprintln!("Total CHG Methylated:   {} ({:.2} %)", total_chg_m, total_chg_m as f32 / total_chg as f32 * 100.0);
+    eprintln!("Total CHG Unmethylated: {} ({:.2} %)", total_chg_um, total_chg_um as f32 / total_chg as f32 * 100.0);
+    eprintln!("Total CHH:              {} ({:.2} %)", total_chh, total_chh as f32 / total_c as f32 as f32 * 100.0);
+    eprintln!("Total CHH Methylated:   {} ({:.2} %)", total_chh_m, total_chh_m as f32 / total_chh as f32 as f32 * 100.0);
+    eprintln!("Total CHH Unmethylated: {} ({:.2} %)", total_chh_um, total_chh_um as f32 / total_chh as f32 as f32 * 100.0);
 }
