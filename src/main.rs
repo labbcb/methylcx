@@ -1,5 +1,7 @@
 use clap::Clap;
+use rust_htslib::bam::record::Cigar;
 use rust_htslib::{bam, bam::Read};
+use std::collections::btree_map::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,6 +14,15 @@ struct Opts {
     /// Counts of (un)methylated and coverage across cycles (CSV).
     #[clap(parse(from_os_str))]
     mbias: PathBuf,
+    /// Counts of (un)methylated and coverage across genome (cov).
+    #[clap(parse(from_os_str))]
+    bismark_cov: PathBuf,
+    /// Counts of (un)methylated and coverage across genome (bedGraph).
+    #[clap(parse(from_os_str))]
+    bed_graph: PathBuf,
+    /// Starting vector capacity to store per sequencing cycles data.
+    #[clap(long, default_value = "200")]
+    start_capacity: usize,
 }
 
 fn main() {
@@ -20,16 +31,20 @@ fn main() {
     // Create a reader to input file.
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
     let mut mbias = File::create(opts.mbias).unwrap();
+    let mut bismark_cov = File::create(opts.bismark_cov).unwrap();
+    let mut bed_graph = File::create(opts.bed_graph).unwrap();
+
+    let header = bam::Header::from_template(bam.header()).to_hashmap();
 
     // Create vectors to store context-aware cytosine methylation status.
     // Context are CpG, CHG and CHH.
     let mut max_len = 0;
-    let mut cpg_m = Vec::new();
-    let mut cpg_um = Vec::new();
-    let mut chg_m = Vec::new();
-    let mut chg_um = Vec::new();
-    let mut chh_m = Vec::new();
-    let mut chh_um = Vec::new();
+    let mut read_cpg_m = Vec::with_capacity(opts.start_capacity);
+    let mut read_cpg_um = Vec::with_capacity(opts.start_capacity);
+    let mut read_chg_m = Vec::with_capacity(opts.start_capacity);
+    let mut read_chg_um = Vec::with_capacity(opts.start_capacity);
+    let mut read_chh_m = Vec::with_capacity(opts.start_capacity);
+    let mut read_chh_um = Vec::with_capacity(opts.start_capacity);
 
     // Get statistics about mapped reads.
     let mut total = 0;
@@ -41,6 +56,21 @@ fn main() {
     let mut total_chg_um = 0;
     let mut total_chh_m = 0;
     let mut total_chh_um = 0;
+
+    // Methylation calls across genome.
+    // Methylated, unmethylated and coverage.
+    let mut chr_cpg: BTreeMap<String, BTreeMap<i64, (u32, u32, u32)>> = BTreeMap::new();
+    let mut chr_chg: BTreeMap<String, BTreeMap<i64, (u32, u32, u32)>> = BTreeMap::new();
+    let mut chr_chh: BTreeMap<String, BTreeMap<i64, (u32, u32, u32)>> = BTreeMap::new();
+
+    // Iterate over SQ header tags to initialize chromosomes.
+    let contigs = header.get("SQ").unwrap();
+    for contig in contigs {
+        let chr = contig.get("SN").unwrap();
+        chr_cpg.insert(chr.to_string(), BTreeMap::new());
+        chr_chg.insert(chr.to_string(), BTreeMap::new());
+        chr_chh.insert(chr.to_string(), BTreeMap::new());
+    }
 
     // Iterate over the entire input file.
     let mut record = bam::Record::new();
@@ -66,56 +96,35 @@ fn main() {
         let reverse = (xr == b"CT" && xg == b"GA") || (xr == b"GA" && xg == b"CT");
 
         // Get CIGAR string as mutable vector.
-        let mut cigar = record.cigar().to_vec();
-
-        // Reverse CIGAR string.
-        if reverse {
-            cigar.reverse();
-        }
-
-        // Generate a vector of boolean values according to CIGAR string.
-        // Soft-clips (S) and insertions (I) are marked to discard (false),
-        // otherwise keep those bases, which are normally matches (M).
-        // Each operation is replicated by its length. Example:
-        // CIGAR string 3M1D5M3S gives 111011111000.
-        let filter: Vec<bool> = cigar
-            .iter()
-            .flat_map(|c| {
-                let keep = c.char() != 'S' || c.char() != 'I';
-                vec![keep; c.len() as usize]
-            })
-            .collect();
+        let cigar = record.cigar();
 
         // Get BAM tag `XM` calculated by Bismark aligner.
         // Keep only bases according to vector of boolean values.
-        let mut xm: Vec<u8> = record
-            .aux(b"XM")
-            .unwrap()
-            .string()
+        let xm = record.aux(b"XM").unwrap().string().to_owned();
+
+        // Get length of match sequence (without soft-clips or insertions).
+        let len = cigar
             .iter()
-            .zip(filter)
-            .filter(|(_, y)| *y)
-            .map(|(x, _)| *x)
-            .collect();
-
-        // Reverse read.
-        if reverse {
-            xm.reverse();
-        }
-
-        // Get length of match sequence (without soft-clips or deletions).
-        let len = xm.len();
+            .filter(|&c| c.char() != 'S' || c.char() != 'I')
+            .map(|&c| c.len() as usize)
+            .sum();
 
         // If it is greater than action maximun sequence length resise vectors.
         if len > max_len {
             max_len = len;
-            cpg_m.resize(max_len, 0);
-            cpg_um.resize(max_len, 0);
-            chg_m.resize(max_len, 0);
-            chg_um.resize(max_len, 0);
-            chh_m.resize(max_len, 0);
-            chh_um.resize(max_len, 0);
+            read_cpg_m.resize(max_len, 0);
+            read_cpg_um.resize(max_len, 0);
+            read_chg_m.resize(max_len, 0);
+            read_chg_um.resize(max_len, 0);
+            read_chh_m.resize(max_len, 0);
+            read_chh_um.resize(max_len, 0);
         }
+
+        let chr = bam.header().tid2name(record.tid() as u32).to_owned();
+        let chr = String::from_utf8(chr).unwrap();
+        let cpg = chr_cpg.get_mut(&chr).unwrap();
+        let chg = chr_chg.get_mut(&chr).unwrap();
+        let chh = chr_chh.get_mut(&chr).unwrap();
 
         // Iterate over valid alignment bases (no soft-clips).
         // Count context-aware cytosine methylation states
@@ -126,25 +135,78 @@ fn main() {
         //   h for not methylated C in CHH context (was converted)
         //   Z for methylated C in CpG context (was protected)
         //   z for not methylated C in CpG context (was converted)
-        for (i, b) in xm.into_iter().enumerate() {
-            if b == b'X' {
-                chg_m[i] += 1;
-                total_chg_m += 1;
-            } else if b == b'x' {
-                chg_um[i] += 1;
-                total_chg_um += 1;
-            } else if b == b'Z' {
-                cpg_m[i] += 1;
-                total_cpg_m += 1;
-            } else if b == b'z' {
-                cpg_um[i] += 1;
-                total_cpg_um += 1;
-            } else if b == b'H' {
-                chh_m[i] += 1;
-                total_chh_m += 1;
-            } else if b == b'h' {
-                chh_um[i] += 1;
-                total_chh_um += 1;
+        let mut xm_idx: usize = 0;
+        let mut read_idx: usize = if !reverse { 0 } else { len };
+        let mut pos = record.pos();
+        for c in cigar.iter() {
+            match c {
+                Cigar::Match(len) => {
+                    while xm_idx < *len as usize {
+                        if reverse {
+                            read_idx -= 1;
+                        }
+                        let b = xm[xm_idx];
+                        if b == b'X' || b == b'x' {
+                            let (m, um, cov) = chg.entry(pos).or_insert((0, 0, 0));
+                            if b == b'X' {
+                                read_chg_m[read_idx] += 1;
+                                total_chg_m += 1;
+                                *m += 1;
+                            } else {
+                                read_chg_um[read_idx] += 1;
+                                total_chg_um += 1;
+                                *um += 1;
+                            }
+                            *cov += 1;
+                        } else if b == b'Z' || b == b'z' {
+                            let (m, um, cov) = cpg.entry(pos).or_insert((0, 0, 0));
+                            if b == b'Z' {
+                                read_cpg_m[read_idx] += 1;
+                                total_cpg_m += 1;
+                                *m += 1;
+                            } else {
+                                read_cpg_um[read_idx] += 1;
+                                total_cpg_um += 1;
+                                *um += 1;
+                            }
+                            *cov += 1;
+                        } else if b == b'H' || b == b'h' {
+                            let (m, um, cov) = chh.entry(pos).or_insert((0, 0, 0));
+                            if b == b'H' {
+                                read_chh_m[read_idx] += 1;
+                                total_chh_m += 1;
+                                *m += 1;
+                            } else {
+                                read_chh_um[read_idx] += 1;
+                                total_chh_um += 1;
+                                *um += 1;
+                            }
+                            *cov += 1;
+                        }
+                        pos += 1;
+                        xm_idx += 1;
+                        if !reverse {
+                            read_idx += 1;
+                        }
+                    }
+                }
+                Cigar::Ins(len) => {
+                    xm_idx += *len as usize;
+                    if !reverse {
+                        read_idx += *len as usize;
+                    } else {
+                        read_idx -= *len as usize;
+                    }
+                }
+                Cigar::Del(len) => {
+                    pos += *len as i64;
+                }
+                Cigar::SoftClip(len) => {
+                    xm_idx += *len as usize;
+                }
+                _ => {
+                    panic!("Invalid CIGAR operation: {}", c.char());
+                }
             }
         }
     }
@@ -154,14 +216,29 @@ fn main() {
     mbias
         .write_all(b"Context,Cycle,Methylated,Unmethylated,Coverage\n")
         .unwrap();
-    for (i, (m, um)) in cpg_m.iter().zip(cpg_um).enumerate() {
+    for (i, (m, um)) in read_cpg_m.iter().zip(read_cpg_um).enumerate() {
         writeln!(&mut mbias, "CpG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
     }
-    for (i, (m, um)) in chg_m.iter().zip(chg_um).enumerate() {
+    for (i, (m, um)) in read_chg_m.iter().zip(read_chg_um).enumerate() {
         writeln!(&mut mbias, "CHG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
     }
-    for (i, (m, um)) in chh_m.iter().zip(chh_um).enumerate() {
+    for (i, (m, um)) in read_chh_m.iter().zip(read_chh_um).enumerate() {
         writeln!(&mut mbias, "CHH,{},{},{},{}", i + 1, m, um, m + um).unwrap();
+    }
+
+    bed_graph.write_all(b"track type=bedGraph\n").unwrap();
+    for (chr, xs) in chr_cpg {
+        for (pos, (m, u, cov)) in xs {
+            let perc = m as f64 / cov as f64 * 100.0;
+            let pos1 = pos + 1;
+            writeln!(
+                &mut bismark_cov,
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                chr, pos1, pos1, perc, m, u
+            )
+            .unwrap();
+            writeln!(&mut bed_graph, "{}\t{}\t{}\t{}", chr, pos, pos1, perc).unwrap();
+        }
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
@@ -170,7 +247,6 @@ fn main() {
         "Valid:                  {} ({} %)",
         total_valid, percent_valid
     );
-
     let total_cpg = total_cpg_m + total_cpg_um;
     let total_chg = total_chg_m + total_chg_um;
     let total_chh = total_chh_m + total_chh_um;
