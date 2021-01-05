@@ -1,5 +1,5 @@
 [package]
-name = "methylx"
+name = "methylcx"
 version = "0.1.0"
 authors = ["Welliton de Souza"]
 edition = "2018"
