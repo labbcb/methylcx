@@ -1,6 +1,63 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, usize};
 
 use rust_htslib::bam::record::Cigar;
+struct Context {
+    max_len: usize,
+    methylated: Vec<u32>,
+    unmethylated: Vec<u32>,
+    total_methylated: u32,
+    total_unmethylated: u32,
+}
+
+impl Context {
+    fn new(capacity: usize) -> Self {
+        Context {
+            max_len: 0,
+            methylated: Vec::with_capacity(capacity),
+            unmethylated: Vec::with_capacity(capacity),
+            total_methylated: 0,
+            total_unmethylated: 0,
+        }
+    }
+
+    fn resize(&mut self, new_len: usize) {
+        if new_len > self.max_len {
+            self.methylated.resize(new_len, 0);
+            self.unmethylated.resize(new_len, 0);
+            self.max_len = new_len;
+        }
+    }
+
+    fn add_methylated(&mut self, idx: usize, count: u32) {
+        self.methylated[idx] += count;
+        self.total_methylated += count;
+    }
+
+    fn add_unmethylated(&mut self, idx: usize, count: u32) {
+        self.unmethylated[idx] += count;
+        self.total_unmethylated += count;
+    }
+
+    fn methylated(&self) -> &[u32] {
+        &self.methylated
+    }
+
+    fn unmethylated(&self) -> &[u32] {
+        &self.unmethylated
+    }
+
+    fn total_methylated(&self) -> u32 {
+        self.total_methylated
+    }
+
+    fn total_unmethylated(&self) -> u32 {
+        self.total_unmethylated
+    }
+
+    fn total(&self) -> u32 {
+        self.total_methylated() + self.total_unmethylated()
+    }
+}
 
 // . for bases not involving cytosines
 // X for methylated C in CHG context (was protected)
@@ -14,36 +71,18 @@ use rust_htslib::bam::record::Cigar;
 
 pub struct CytosineRead {
     max_len: usize,
-    cpg_m: Vec<u32>,
-    cpg_u: Vec<u32>,
-    chg_m: Vec<u32>,
-    chg_u: Vec<u32>,
-    chh_m: Vec<u32>,
-    chh_u: Vec<u32>,
-    total_cpg_m: u32,
-    total_cpg_u: u32,
-    total_chg_m: u32,
-    total_chg_u: u32,
-    total_chh_m: u32,
-    total_chh_u: u32,
+    cpg: Context,
+    chg: Context,
+    chh: Context,
 }
 
 impl CytosineRead {
     pub fn new(capacity: usize) -> Self {
         CytosineRead {
             max_len: 0,
-            cpg_m: Vec::with_capacity(capacity),
-            cpg_u: Vec::with_capacity(capacity),
-            chg_m: Vec::with_capacity(capacity),
-            chg_u: Vec::with_capacity(capacity),
-            chh_m: Vec::with_capacity(capacity),
-            chh_u: Vec::with_capacity(capacity),
-            total_cpg_m: 0,
-            total_cpg_u: 0,
-            total_chg_m: 0,
-            total_chg_u: 0,
-            total_chh_m: 0,
-            total_chh_u: 0,
+            cpg: Context::new(capacity),
+            chg: Context::new(capacity),
+            chh: Context::new(capacity),
         }
     }
 
@@ -55,7 +94,7 @@ impl CytosineRead {
             cigar.reverse();
         }
 
-        let filter: Vec<bool> = cigar
+        let filter: Vec<_> = cigar
             .iter()
             .flat_map(|c| {
                 let keep = c.char() != 'S' || c.char() != 'I';
@@ -63,7 +102,7 @@ impl CytosineRead {
             })
             .collect();
 
-        let xm: Vec<u8> = xm
+        let xm: Vec<_> = xm
             .iter()
             .zip(filter)
             .filter(|(_, y)| *y)
@@ -75,97 +114,88 @@ impl CytosineRead {
         for (i, &b) in xm.iter().enumerate() {
             if b == b'.' {
             } else if b == b'X' {
-                self.chg_m[i] += 1;
-                self.total_chg_m += 1;
+                self.chg.add_methylated(i, 1);
             } else if b == b'x' {
-                self.chg_u[i] += 1;
-                self.total_chg_u += 1;
+                self.chg.add_unmethylated(i, 1);
             } else if b == b'H' {
-                self.chh_m[i] += 1;
-                self.total_chh_m += 1;
+                self.chh.add_methylated(i, 1);
             } else if b == b'h' {
-                self.chh_u[i] += 1;
-                self.total_chh_u += 1;
+                self.chh.add_unmethylated(i, 1);
             } else if b == b'Z' {
-                self.cpg_m[i] += 1;
-                self.total_cpg_m += 1;
+                self.cpg.add_methylated(i, 1);
             } else if b == b'z' {
-                self.cpg_u[i] += 1;
-                self.total_cpg_u += 1;
+                self.cpg.add_unmethylated(i, 1);
             }
         }
     }
 
     pub fn resize(&mut self, new_len: usize) {
         if new_len > self.max_len {
-            self.cpg_m.resize(new_len, 0);
-            self.cpg_u.resize(new_len, 0);
-            self.chg_m.resize(new_len, 0);
-            self.chg_u.resize(new_len, 0);
-            self.chh_m.resize(new_len, 0);
-            self.chh_u.resize(new_len, 0);
+            self.cpg.resize(new_len);
+            self.chg.resize(new_len);
+            self.chh.resize(new_len);
             self.max_len = new_len;
         }
     }
 
     pub fn cpg_m(&self) -> &[u32] {
-        &self.cpg_m
+        &self.cpg.methylated()
     }
 
     pub fn cpg_u(&self) -> &[u32] {
-        &self.cpg_u
+        &self.cpg.unmethylated()
     }
 
     pub fn chg_m(&self) -> &[u32] {
-        &self.chg_m
+        &self.chg.methylated()
     }
 
     pub fn chg_u(&self) -> &[u32] {
-        &self.chg_u
+        &self.chg.unmethylated()
     }
 
     pub fn chh_m(&self) -> &[u32] {
-        &self.chh_m
+        &self.chh.methylated()
     }
 
     pub fn chh_u(&self) -> &[u32] {
-        &self.chh_u
+        &self.chh.unmethylated()
     }
 
     pub fn total_cpg_methylated(&self) -> u32 {
-        self.total_cpg_m
+        self.cpg.total_methylated()
     }
 
     pub fn total_cpg_unmethylated(&self) -> u32 {
-        self.total_cpg_u
+        self.cpg.total_unmethylated()
     }
 
     pub fn total_cpg(&self) -> u32 {
-        self.total_cpg_m + self.total_cpg_u
+        self.cpg.total()
     }
 
     pub fn total_chg_methylated(&self) -> u32 {
-        self.total_chg_m
+        self.chg.total_methylated()
     }
 
     pub fn total_chg_unmethylated(&self) -> u32 {
-        self.total_chg_u
+        self.chg.total_unmethylated()
     }
 
     pub fn total_chg(&self) -> u32 {
-        self.total_chg_m + self.total_cpg_u
+        self.chg.total()
     }
 
     pub fn total_chh_methylated(&self) -> u32 {
-        self.total_chh_m
+        self.chh.total_methylated()
     }
 
     pub fn total_chh_unmethylated(&self) -> u32 {
-        self.total_chh_u
+        self.chh.total_unmethylated()
     }
 
     pub fn total_chh(&self) -> u32 {
-        self.total_chh_m + self.total_chh_u
+        self.chh.total()
     }
 
     pub fn total_c(&self) -> u32 {
@@ -230,7 +260,7 @@ impl CytosineGenome {
                     let len = *len as usize;
                     for _ in 0..len {
                         pos += 1;
-                        
+
                         let &b = xm_iter.next().unwrap();
                         if b == b'.' {
                             continue;
