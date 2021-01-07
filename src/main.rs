@@ -1,4 +1,6 @@
 use clap::Clap;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use methylcx::{CytosineGenome, CytosineRead};
 use rust_htslib::{bam, bam::Read};
 use std::fs::File;
@@ -14,10 +16,10 @@ struct Opts {
     /// Counts of (un)methylated and coverage across cycles (CSV).
     #[clap(parse(from_os_str))]
     mbias: PathBuf,
-    /// Counts of (un)methylated and coverage across genome (cov).
+    /// Counts of (un)methylated and coverage across genome (cov, gzipped).
     #[clap(parse(from_os_str))]
     bismark_cov: PathBuf,
-    /// Counts of (un)methylated and coverage across genome (bedGraph).
+    /// Counts of (un)methylated and coverage across genome (bedGraph, gzipped).
     #[clap(parse(from_os_str))]
     bed_graph: PathBuf,
     /// Starting vector capacity to store per sequencing cycles data.
@@ -31,8 +33,14 @@ fn main() {
     // Create a reader to input file.
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
     let mut mbias = File::create(opts.mbias).unwrap();
-    let mut bismark_cov = File::create(opts.bismark_cov).unwrap();
-    let mut bed_graph = File::create(opts.bed_graph).unwrap();
+    let mut bismark_cov = GzEncoder::new(
+        File::create(opts.bismark_cov).unwrap(),
+        Compression::default(),
+    );
+    let mut bed_graph = GzEncoder::new(
+        File::create(opts.bed_graph).unwrap(),
+        Compression::default(),
+    );
 
     // Given BAM header, get values from key SN of tags SQ.
     let chrs = bam::Header::from_template(bam.header())
@@ -80,7 +88,7 @@ fn main() {
     for (i, (m, um)) in cytosine_read
         .cpg_m()
         .iter()
-        .zip(cytosine_read.cpg_m())
+        .zip(cytosine_read.cpg_u())
         .enumerate()
     {
         writeln!(&mut mbias, "CpG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
@@ -88,7 +96,7 @@ fn main() {
     for (i, (m, um)) in cytosine_read
         .chg_m()
         .iter()
-        .zip(cytosine_read.chg_m())
+        .zip(cytosine_read.chg_u())
         .enumerate()
     {
         writeln!(&mut mbias, "CHG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
@@ -96,7 +104,7 @@ fn main() {
     for (i, (m, um)) in cytosine_read
         .chh_m()
         .iter()
-        .zip(cytosine_read.chh_m())
+        .zip(cytosine_read.chh_u())
         .enumerate()
     {
         writeln!(&mut mbias, "CHH,{},{},{},{}", i + 1, m, um, m + um).unwrap();
