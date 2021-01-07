@@ -3,10 +3,10 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use methylcx::{CytosineGenome, CytosineRead};
 use rust_htslib::{bam, bam::Read};
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::usize;
+use std::{fs::File, io};
 
 #[derive(Clap)]
 struct Opts {
@@ -14,14 +14,14 @@ struct Opts {
     #[clap(parse(from_os_str))]
     input: PathBuf,
     /// Counts of (un)methylated and coverage across cycles (CSV).
-    #[clap(parse(from_os_str))]
-    mbias: PathBuf,
+    #[clap(long, parse(from_os_str))]
+    mbias: Option<PathBuf>,
     /// Counts of (un)methylated and coverage across genome (cov, gzipped).
-    #[clap(parse(from_os_str))]
-    bismark_cov: PathBuf,
+    #[clap(long, parse(from_os_str))]
+    bismark_cov: Option<PathBuf>,
     /// Counts of (un)methylated and coverage across genome (bedGraph, gzipped).
-    #[clap(parse(from_os_str))]
-    bed_graph: PathBuf,
+    #[clap(long, parse(from_os_str))]
+    bed_graph: Option<PathBuf>,
     /// Starting vector capacity to store per sequencing cycles data.
     #[clap(long, default_value = "200")]
     start_capacity: usize,
@@ -30,17 +30,26 @@ struct Opts {
 fn main() {
     let opts: Opts = Opts::parse();
 
-    // Create a reader to input file.
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
-    let mut mbias = File::create(opts.mbias).unwrap();
-    let mut bismark_cov = GzEncoder::new(
-        File::create(opts.bismark_cov).unwrap(),
-        Compression::default(),
-    );
-    let mut bed_graph = GzEncoder::new(
-        File::create(opts.bed_graph).unwrap(),
-        Compression::default(),
-    );
+
+    let mbias = match opts.mbias {
+        Some(value) => Some(File::create(value).unwrap()),
+        None => None,
+    };
+    let bismark_cov = match opts.bismark_cov {
+        Some(value) => Some(GzEncoder::new(
+            File::create(value).unwrap(),
+            Compression::default(),
+        )),
+        None => None,
+    };
+    let bed_graph = match opts.bed_graph {
+        Some(value) => Some(GzEncoder::new(
+            File::create(value).unwrap(),
+            Compression::default(),
+        )),
+        None => None,
+    };
 
     // Given BAM header, get values from key SN of tags SQ.
     let chrs = bam::Header::from_template(bam.header())
@@ -80,49 +89,16 @@ fn main() {
         cytosine_genome.process(pos, chr, xm, &cigar).unwrap();
     }
 
-    // Print result tables in CSV format to stdout.
-    // Tables are merged as long format and discriminated by `Context` column.
-    mbias
-        .write_all(b"Context,Cycle,Methylated,Unmethylated,Coverage\n")
-        .unwrap();
-    for (i, (m, um)) in cytosine_read
-        .cpg_m()
-        .iter()
-        .zip(cytosine_read.cpg_u())
-        .enumerate()
-    {
-        writeln!(&mut mbias, "CpG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
-    }
-    for (i, (m, um)) in cytosine_read
-        .chg_m()
-        .iter()
-        .zip(cytosine_read.chg_u())
-        .enumerate()
-    {
-        writeln!(&mut mbias, "CHG,{},{},{},{}", i + 1, m, um, m + um).unwrap();
-    }
-    for (i, (m, um)) in cytosine_read
-        .chh_m()
-        .iter()
-        .zip(cytosine_read.chh_u())
-        .enumerate()
-    {
-        writeln!(&mut mbias, "CHH,{},{},{},{}", i + 1, m, um, m + um).unwrap();
+    if let Some(mut writer) = mbias {
+        write_mbias(&cytosine_read, &mut writer).unwrap();
     }
 
-    bed_graph.write_all(b"track type=bedGraph\n").unwrap();
-    for (chr, xs) in cytosine_genome.cpg() {
-        for (pos, (m, u, cov)) in xs {
-            let perc = *m as f64 / *cov as f64 * 100.0;
-            let pos1 = pos + 1;
-            writeln!(
-                &mut bismark_cov,
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                chr, pos1, pos1, perc, m, u
-            )
-            .unwrap();
-            writeln!(&mut bed_graph, "{}\t{}\t{}\t{}", chr, pos, pos1, perc).unwrap();
-        }
+    if let Some(mut writer) = bed_graph {
+        write_bed_graph(&cytosine_genome, &mut writer).unwrap();
+    }
+
+    if let Some(mut writer) = bismark_cov {
+        write_bismark_cov(&cytosine_genome, &mut writer).unwrap();
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
@@ -132,6 +108,70 @@ fn main() {
         total_valid, percent_valid
     );
     report_read_stats(&cytosine_read);
+}
+
+// Print result tables in CSV format to stdout.
+// Tables are merged as long format and discriminated by `Context` column.
+fn write_mbias(cytosine_read: &CytosineRead, writer: &mut File) -> io::Result<()> {
+    writer.write_all(b"Context,Cycle,Methylated,Unmethylated,Coverage\n")?;
+    for (i, (m, um)) in cytosine_read
+        .cpg_m()
+        .iter()
+        .zip(cytosine_read.cpg_u())
+        .enumerate()
+    {
+        writeln!(writer, "CpG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read
+        .chg_m()
+        .iter()
+        .zip(cytosine_read.chg_u())
+        .enumerate()
+    {
+        writeln!(writer, "CHG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read
+        .chh_m()
+        .iter()
+        .zip(cytosine_read.chh_u())
+        .enumerate()
+    {
+        writeln!(writer, "CHH,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    Ok(())
+}
+
+fn write_bed_graph(
+    cytosine_genome: &CytosineGenome,
+    writer: &mut GzEncoder<File>,
+) -> io::Result<()> {
+    writer.write_all(b"track type=bedGraph\n")?;
+    for (chr, xs) in cytosine_genome.cpg() {
+        for (pos, (m, _, cov)) in xs {
+            let perc = *m as f64 / *cov as f64 * 100.0;
+            let pos1 = pos + 1;
+            writeln!(writer, "{}\t{}\t{}\t{}", chr, pos, pos1, perc)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_bismark_cov(
+    cytosine_genome: &CytosineGenome,
+    writer: &mut GzEncoder<File>,
+) -> io::Result<()> {
+    for (chr, xs) in cytosine_genome.cpg() {
+        for (pos, (m, u, cov)) in xs {
+            let perc = *m as f64 / *cov as f64 * 100.0;
+            let pos1 = pos + 1;
+            writeln!(
+                writer,
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                chr, pos1, pos1, perc, m, u
+            )?;
+        }
+    }
+    return Ok(());
 }
 
 // Get Bismark tags about read conversion (XR) and genome conversion (XG)
