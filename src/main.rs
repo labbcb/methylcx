@@ -32,25 +32,6 @@ fn main() {
 
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
 
-    let mbias = match opts.mbias {
-        Some(value) => Some(File::create(value).unwrap()),
-        None => None,
-    };
-    let bismark_cov = match opts.bismark_cov {
-        Some(value) => Some(GzEncoder::new(
-            File::create(value).unwrap(),
-            Compression::default(),
-        )),
-        None => None,
-    };
-    let bed_graph = match opts.bed_graph {
-        Some(value) => Some(GzEncoder::new(
-            File::create(value).unwrap(),
-            Compression::default(),
-        )),
-        None => None,
-    };
-
     // Given BAM header, get values from key SN of tags SQ.
     let chrs = bam::Header::from_template(bam.header())
         .to_hashmap()
@@ -89,15 +70,18 @@ fn main() {
         cytosine_genome.process(pos, chr, xm, &cigar).unwrap();
     }
 
-    if let Some(mut writer) = mbias {
+    if let Some(output) = opts.mbias {
+        let mut writer = File::create(output).unwrap();
         write_mbias(&cytosine_read, &mut writer).unwrap();
     }
 
-    if let Some(mut writer) = bed_graph {
+    if let Some(output) = opts.bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
         write_bed_graph(&cytosine_genome, &mut writer).unwrap();
     }
 
-    if let Some(mut writer) = bismark_cov {
+    if let Some(output) = opts.bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
         write_bismark_cov(&cytosine_genome, &mut writer).unwrap();
     }
 
