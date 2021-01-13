@@ -39,10 +39,6 @@ fn main() {
 
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
 
-    if opts.cytosine_report.is_some() && opts.genome.is_none() {
-        panic!("mising reference genome file");
-    }
-
     // Given BAM header, get values from key SN of tags SQ.
     let chrs = bam::Header::from_template(bam.header())
         .to_hashmap()
@@ -51,8 +47,22 @@ fn main() {
         .iter()
         .map(|c| c.get("SN").unwrap().to_owned())
         .collect();
-    let mut cytosine_genome = CytosineGenome::new(chrs);
-    let mut cytosine_read = CytosineRead::new(opts.start_capacity);
+
+    // Instanciate processing tasks on demand.
+    let mut cytosine_read = opts
+        .mbias
+        .as_ref()
+        .and(Some(CytosineRead::new(opts.start_capacity)));
+    let mut cytosine_genome =
+        if opts.bismark_cov.is_some() || opts.bed_graph.is_some() || opts.cytosine_report.is_some()
+        {
+            if opts.cytosine_report.is_some() && opts.genome.is_none() {
+                panic!("mising reference genome file");
+            }
+            Some(CytosineGenome::new(chrs))
+        } else {
+            None
+        };
 
     // Get statistics about mapped reads.
     let mut total = 0;
@@ -72,34 +82,38 @@ fn main() {
 
         let chr = bam.header().tid2name(record.tid() as u32).to_owned();
         let chr = String::from_utf8(chr).unwrap();
-        let pos = record.pos() as u64 + 1;
         let cigar = record.cigar().to_vec();
         let xm = record.aux(b"XM").unwrap().string();
-        let reverse = is_reverse(&record).unwrap();
 
-        cytosine_read.process(xm, reverse, &cigar);
-        cytosine_genome.process(pos, chr, xm, &cigar).unwrap();
+        if let Some(task) = cytosine_read.as_mut() {
+            let reverse = is_reverse(&record).unwrap();
+            task.process(xm, reverse, &cigar);
+        }
+        if let Some(task) = cytosine_genome.as_mut() {
+            let pos = record.pos() as u64 + 1;
+            task.process(pos, chr, xm, &cigar).unwrap();
+        }
     }
 
     if let Some(output) = opts.mbias {
         let mut writer = File::create(output).unwrap();
-        write_mbias(&cytosine_read, &mut writer).unwrap();
+        write_mbias(cytosine_read.as_ref().unwrap(), &mut writer).unwrap();
     }
 
     if let Some(output) = opts.bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(&cytosine_genome, &mut writer).unwrap();
+        write_bismark_cov(cytosine_genome.as_ref().unwrap(), &mut writer).unwrap();
     }
 
     if let Some(output) = opts.bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(&cytosine_genome, &mut writer).unwrap();
+        write_bed_graph(cytosine_genome.as_ref().unwrap(), &mut writer).unwrap();
     }
 
     if let Some(output) = opts.cytosine_report {
         let genome = opts.genome.unwrap();
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_cytosine_report(&cytosine_genome, &genome, &mut writer).unwrap();
+        write_cytosine_report(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
@@ -108,7 +122,10 @@ fn main() {
         "Valid:                  {} ({} %)",
         total_valid, percent_valid
     );
-    report_read_stats(&cytosine_read);
+
+    if let Some(task) = cytosine_read.as_ref() {
+        report_read_stats(task);
+    }
 }
 
 fn write_cytosine_report(
