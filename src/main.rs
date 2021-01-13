@@ -1,3 +1,4 @@
+use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -22,6 +23,12 @@ struct Opts {
     /// Counts of (un)methylated and coverage across genome (bedGraph, gzipped).
     #[clap(long, parse(from_os_str))]
     bed_graph: Option<PathBuf>,
+    /// Strand-specific counts of (un)methylated CpG across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    cytosine_report: Option<PathBuf>,
+    /// Reference genome file (FASTA format). Only required for --cytosine report.
+    #[clap(long, parse(from_os_str))]
+    genome: Option<PathBuf>,
     /// Starting vector capacity to store per sequencing cycles data.
     #[clap(long, default_value = "200")]
     start_capacity: usize,
@@ -31,6 +38,10 @@ fn main() {
     let opts: Opts = Opts::parse();
 
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
+
+    if opts.cytosine_report.is_some() && opts.genome.is_none() {
+        panic!("mising reference genome file");
+    }
 
     // Given BAM header, get values from key SN of tags SQ.
     let chrs = bam::Header::from_template(bam.header())
@@ -61,7 +72,7 @@ fn main() {
 
         let chr = bam.header().tid2name(record.tid() as u32).to_owned();
         let chr = String::from_utf8(chr).unwrap();
-        let pos = record.pos() as u64;
+        let pos = record.pos() as u64 + 1;
         let cigar = record.cigar().to_vec();
         let xm = record.aux(b"XM").unwrap().string();
         let reverse = is_reverse(&record).unwrap();
@@ -77,12 +88,18 @@ fn main() {
 
     if let Some(output) = opts.bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(&cytosine_genome, &mut writer).unwrap();
+        write_bismark_cov(&cytosine_genome, &mut writer).unwrap();
     }
 
     if let Some(output) = opts.bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(&cytosine_genome, &mut writer).unwrap();
+        write_bed_graph(&cytosine_genome, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.cytosine_report {
+        let genome = opts.genome.unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report(&cytosine_genome, &genome, &mut writer).unwrap();
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
@@ -92,6 +109,63 @@ fn main() {
         total_valid, percent_valid
     );
     report_read_stats(&cytosine_read);
+}
+
+fn write_cytosine_report(
+    cytosine_genome: &CytosineGenome,
+    genome: &PathBuf,
+    writer: &mut GzEncoder<File>,
+) -> io::Result<()> {
+    let reader = fasta::Reader::from_file(genome)?;
+    let mut records = reader.records();
+    while let Some(Ok(record)) = records.next() {
+        let id = record.id();
+        let seq = record.seq();
+
+        let cpg = match cytosine_genome.cpg().get(id) {
+            Some(value) => value,
+            None => {
+                continue;
+            }
+        };
+
+        let mut pos = 0;
+        for idx in 0..seq.len() - 2 {
+            pos += 1;
+
+            if !((seq[idx] == b'C' || seq[idx] == b'c')
+                && (seq[idx + 1] == b'G' || seq[idx + 1] == b'g'))
+            {
+                continue;
+            }
+
+            let (m, u, _) = cpg.get(&pos).unwrap_or(&(0, 0, 0));
+
+            writeln!(
+                writer,
+                "{}\t{}\t+\t{}\t{}\tCG\t{}",
+                id,
+                pos,
+                m,
+                u,
+                std::str::from_utf8(&seq[idx..idx + 3]).unwrap()
+            )?;
+
+            let (m, u, _) = cpg.get(&(pos + 1)).unwrap_or(&(0, 0, 0));
+
+            writeln!(
+                writer,
+                "{}\t{}\t-\t{}\t{}\tCG\t{}",
+                id,
+                pos + 1,
+                m,
+                u,
+                std::str::from_utf8(&dna::revcomp(&seq[idx - 1..idx + 2])).unwrap()
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 // Print result tables in CSV format to stdout.
@@ -133,8 +207,7 @@ fn write_bed_graph(
     for (chr, xs) in cytosine_genome.cpg() {
         for (pos, (m, _, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
-            let pos1 = pos + 1;
-            writeln!(writer, "{}\t{}\t{}\t{}", chr, pos, pos1, perc)?;
+            writeln!(writer, "{}\t{}\t{}\t{}", chr, pos - 1, pos, perc)?;
         }
     }
     Ok(())
@@ -147,11 +220,15 @@ fn write_bismark_cov(
     for (chr, xs) in cytosine_genome.cpg() {
         for (pos, (m, u, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
-            let pos1 = pos + 1;
             writeln!(
                 writer,
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                chr, pos1, pos1, perc, m, u
+                chr,
+                pos,
+                pos + 1,
+                perc,
+                m,
+                u
             )?;
         }
     }

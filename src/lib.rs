@@ -112,19 +112,14 @@ impl CytosineRead {
         self.resize(xm.len());
 
         for (i, &b) in xm.iter().enumerate() {
-            if b == b'.' {
-            } else if b == b'X' {
-                self.chg.add_methylated(i, 1);
-            } else if b == b'x' {
-                self.chg.add_unmethylated(i, 1);
-            } else if b == b'H' {
-                self.chh.add_methylated(i, 1);
-            } else if b == b'h' {
-                self.chh.add_unmethylated(i, 1);
-            } else if b == b'Z' {
-                self.cpg.add_methylated(i, 1);
-            } else if b == b'z' {
-                self.cpg.add_unmethylated(i, 1);
+            match b {
+                b'X' => self.chg.add_methylated(i, 1),
+                b'x' => self.chg.add_unmethylated(i, 1),
+                b'H' => self.chh.add_methylated(i, 1),
+                b'h' => self.chh.add_unmethylated(i, 1),
+                b'Z' => self.cpg.add_methylated(i, 1),
+                b'z' => self.cpg.add_unmethylated(i, 1),
+                _ => {}
             }
         }
     }
@@ -250,41 +245,34 @@ impl CytosineGenome {
         let chh = self.chh.get_mut(&chr).unwrap();
         let unknown = self.unknown.get_mut(&chr).unwrap();
 
-        // Substract 1 base from start position.
-        let mut pos = pos - 1;
-
+        let mut pos = pos;
         let mut xm_iter = xm.iter();
         for c in cigar.iter() {
             match c {
                 Cigar::Match(len) => {
                     let len = *len as usize;
                     for _ in 0..len {
-                        pos += 1;
-
                         let &b = xm_iter.next().unwrap();
                         if b == b'.' {
+                            pos += 1;
                             continue;
                         }
 
-                        let (m, u, c) = if b == b'X' || b == b'x' {
-                            chg.entry(pos).or_insert((0, 0, 0))
-                        } else if b == b'H' || b == b'h' {
-                            chh.entry(pos).or_insert((0, 0, 0))
-                        } else if b == b'Z' || b == b'z' {
-                            cpg.entry(pos).or_insert((0, 0, 0))
-                        } else if b == b'U' || b == b'u' {
-                            unknown.entry(pos).or_insert((0, 0, 0))
-                        } else {
-                            return Err(format!("invalid XM key {}", b as char));
+                        let (m, u, c) = match b {
+                            b'X' | b'x' => chg.entry(pos).or_insert((0, 0, 0)),
+                            b'H' | b'h' => chh.entry(pos).or_insert((0, 0, 0)),
+                            b'Z' | b'z' => cpg.entry(pos).or_insert((0, 0, 0)),
+                            b'U' | b'u' => unknown.entry(pos).or_insert((0, 0, 0)),
+                            _ => return Err(format!("invalid XM key {}", b as char)),
                         };
 
-                        // Do not count methylation at unknown context.
-                        if b == b'X' || b == b'H' || b == b'Z' {
+                        if matches!(b, b'X' | b'H' | b'Z' | b'U') {
                             *m += 1;
                         } else {
                             *u += 1;
                         }
                         *c += 1;
+                        pos += 1;
                     }
                 }
                 Cigar::Ins(len) | Cigar::SoftClip(len) => {
