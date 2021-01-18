@@ -383,106 +383,114 @@ fn clip_five_prime(
     xm: Vec<u8>,
     clip: u32,
 ) -> Option<(Vec<Cigar>, u64, Vec<u8>)> {
-    let mut new_cigar: Vec<Cigar> = Vec::new();
-    let mut pos = pos;
-    let mut start = 0;
-    let mut clip = clip;
+    if let Some(Cigar::Match(_)) = cigar.first() {
+        let mut new_cigar: Vec<Cigar> = Vec::new();
+        let mut pos = pos;
+        let mut start = 0;
+        let mut clip = clip;
 
-    let mut cigar_iter = cigar.into_iter();
-    while let Some(c) = cigar_iter.next() {
-        if clip == 0 {
-            new_cigar.push(c);
-            continue;
+        let mut cigar_iter = cigar.into_iter();
+        while let Some(c) = cigar_iter.next() {
+            if clip == 0 {
+                new_cigar.push(c);
+                continue;
+            }
+            match c {
+                Cigar::Match(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Match(len - clip));
+                        start += clip;
+                        pos += clip as u64;
+                        clip = 0;
+                    } else {
+                        start += len;
+                        pos += len as u64;
+                        clip -= len;
+                    }
+                }
+                Cigar::Ins(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Ins(len - clip));
+                        start += clip;
+                        clip = 0;
+                    } else {
+                        start += len;
+                        clip -= len;
+                    }
+                }
+                Cigar::Del(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Del(len - clip));
+                        pos += clip as u64;
+                    } else {
+                        pos += len as u64;
+                    }
+                }
+                _ => {}
+            }
         }
-        match c {
-            Cigar::Match(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Match(len - clip));
-                    start += clip;
-                    pos += clip as u64;
-                    clip = 0;
-                } else {
-                    start += len;
-                    pos += len as u64;
-                    clip -= len;
-                }
-            }
-            Cigar::Ins(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Ins(len - clip));
-                    start += clip;
-                    clip = 0;
-                } else {
-                    start += len;
-                    clip -= len;
-                }
-            }
-            Cigar::Del(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Del(len - clip));
-                    pos += clip as u64;
-                } else {
-                    pos += len as u64;
-                }
-            }
-            _ => {}
-        }
-    }
 
-    let start = start as usize;
-    if start < xm.len() {
-        Some((new_cigar, pos, xm[start..].to_vec()))
+        let start = start as usize;
+        if start < xm.len() {
+            Some((new_cigar, pos, xm[start..].to_vec()))
+        } else {
+            None
+        }
     } else {
-        None
+        Some((cigar, pos, xm))
     }
 }
 
 fn clip_three_prime(cigar: Vec<Cigar>, xm: Vec<u8>, clip: u32) -> Option<(Vec<Cigar>, Vec<u8>)> {
-    let mut new_cigar: Vec<Cigar> = Vec::new();
-    let mut end = xm.len() as i32;
-    let mut clip = clip;
+    if let Some(Cigar::Match(_)) = cigar.last() {
+        let mut new_cigar: Vec<Cigar> = Vec::new();
+        let mut end = xm.len() as i32;
+        let mut clip = clip;
 
-    let mut cigar_iter = cigar.into_iter().rev();
-    while let Some(c) = cigar_iter.next() {
-        if clip == 0 {
-            new_cigar.push(c);
-            continue;
+        let mut cigar_iter = cigar.into_iter().rev();
+        while let Some(c) = cigar_iter.next() {
+            if clip == 0 {
+                new_cigar.push(c);
+                continue;
+            }
+            match c {
+                Cigar::Match(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Match(len - clip));
+                        end -= clip as i32;
+                        clip = 0;
+                    } else {
+                        end -= len as i32;
+                        clip -= len;
+                    }
+                }
+                Cigar::Ins(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Ins(len - clip));
+                        end -= clip as i32;
+                        clip = 0;
+                    } else {
+                        end -= len as i32;
+                        clip -= len;
+                    }
+                }
+                Cigar::Del(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Del(len - clip));
+                    }
+                }
+                _ => {}
+            }
         }
-        match c {
-            Cigar::Match(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Match(len - clip));
-                    end -= clip as i32;
-                    clip = 0;
-                } else {
-                    end -= len as i32;
-                    clip -= len;
-                }
-            }
-            Cigar::Ins(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Ins(len - clip));
-                    end -= clip as i32;
-                    clip = 0;
-                } else {
-                    end -= len as i32;
-                    clip -= len;
-                }
-            }
-            Cigar::Del(len) => {
-                if len > clip {
-                    new_cigar.push(Cigar::Del(len - clip));
-                }
-            }
-            _ => {}
-        }
-    }
 
-    if end > 0 {
-        new_cigar.reverse();
-        let end = end as usize;
-        Some((new_cigar, xm[..end].to_vec()))
+        if end > 0 {
+            new_cigar.reverse();
+            let end = end as usize;
+            Some((new_cigar, xm[..end].to_vec()))
+        } else {
+            None
+        }
     } else {
-        None
+        Some((cigar, xm))
     }
 }
