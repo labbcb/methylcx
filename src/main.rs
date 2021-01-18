@@ -2,7 +2,7 @@ use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use methylcx::{Clipper, CytosineGenome, CytosineRead};
+use methylcx::{Clipper, ClipperConfig, CytosineGenome, CytosineRead};
 use rust_htslib::{bam, bam::Read};
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,6 +20,12 @@ struct Opts {
     /// Clip last bases of aligned sequence in end-to-end mode (3' orientation).
     #[clap(long, default_value = "0")]
     three_prime_clip: u32,
+    /// Clip first bases of aligned sequence in local mode (5' orientation).
+    #[clap(long, default_value = "0")]
+    five_soft_clip: u32,
+    /// Clip last bases of aligned sequence in local mode (3' orientation).
+    #[clap(long, default_value = "0")]
+    three_soft_clip: u32,
     /// Minimum read length.
     #[clap(long, default_value = "0")]
     min_length: u32,
@@ -75,10 +81,13 @@ fn main() {
             None
         };
 
-    let clipper = Clipper {
+    let config = ClipperConfig {
         five_prime_clip: opts.five_prime_clip,
         three_prime_clip: opts.three_prime_clip,
+        five_soft_clip: opts.five_soft_clip,
+        three_soft_clip: opts.three_soft_clip,
     };
+    let mut clipper = Clipper::new(config);
 
     // Get statistics about mapped reads.
     let mut total: u32 = 0;
@@ -165,9 +174,34 @@ fn main() {
         total_removed,
         total_removed as f32 / total as f32 * 100.0
     );
+    write_clipper_stats(&clipper);
     if let Some(task) = cytosine_read.as_ref() {
         report_read_stats(task);
     }
+}
+
+fn write_clipper_stats(clipper: &Clipper) {
+    let total = clipper.total() as f32;
+    println!(
+        "M:                      {} ({:.2} %)",
+        clipper.total_m(),
+        clipper.total_m() as f32 / total * 100.0
+    );
+    println!(
+        "SM:                     {} ({:.2} %)",
+        clipper.total_sm(),
+        clipper.total_sm() as f32 / total * 100.0
+    );
+    println!(
+        "MS:                     {} ({:.2} %)",
+        clipper.total_ms(),
+        clipper.total_ms() as f32 / total * 100.0
+    );
+    println!(
+        "SMS:                    {} ({:.2} %)",
+        clipper.total_sms(),
+        clipper.total_sms() as f32 / total * 100.0
+    );
 }
 
 fn write_cytosine_report(

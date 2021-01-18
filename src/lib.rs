@@ -316,9 +316,19 @@ impl CytosineGenome {
     }
 }
 
-pub struct Clipper {
+pub struct ClipperConfig {
     pub five_prime_clip: u32,
     pub three_prime_clip: u32,
+    pub five_soft_clip: u32,
+    pub three_soft_clip: u32,
+}
+
+pub struct Clipper {
+    config: ClipperConfig,
+    total_m: u32,
+    total_sm: u32,
+    total_ms: u32,
+    total_sms: u32,
 }
 
 /// Clipper trims first and/or last bases from a sequence and updates CIGAR string and POS value.
@@ -331,22 +341,34 @@ pub struct Clipper {
 /// Insertions (I) consume bases to clip and trim sequence. POS is not altered.
 /// Deletions (D) update POS. Sequence is not trimmed and bases to clip is not clipped.
 impl Clipper {
+    pub fn new(config: ClipperConfig) -> Clipper {
+        Clipper {
+            config,
+            total_m: 0,
+            total_sm: 0,
+            total_ms: 0,
+            total_sms: 0,
+        }
+    }
+
     pub fn process(
-        &self,
+        &mut self,
         cigar: Vec<Cigar>,
         pos: u64,
         xm: Vec<u8>,
         reverse: bool,
     ) -> Option<(Vec<Cigar>, u64, Vec<u8>)> {
+        self.count_cigar(&cigar);
+
         let five_prime_clip = if reverse {
-            self.three_prime_clip
+            self.config.three_prime_clip
         } else {
-            self.five_prime_clip
+            self.config.five_prime_clip
         };
         let three_prime_clip = if reverse {
-            self.five_prime_clip
+            self.config.five_prime_clip
         } else {
-            self.three_prime_clip
+            self.config.three_prime_clip
         };
 
         let mut cigar = cigar;
@@ -373,7 +395,87 @@ impl Clipper {
             }
         }
 
+        let five_soft_clip = if reverse {
+            self.config.three_soft_clip
+        } else {
+            self.config.five_soft_clip
+        };
+        let three_soft_clip = if reverse {
+            self.config.five_soft_clip
+        } else {
+            self.config.three_soft_clip
+        };
+
+        if five_soft_clip > 0 {
+            match clip_five_soft(cigar, pos, xm, five_soft_clip) {
+                Some((new_cigar, new_pos, new_xm)) => {
+                    cigar = new_cigar;
+                    pos = new_pos;
+                    xm = new_xm;
+                }
+                None => return None,
+            }
+        }
+
+        if three_soft_clip > 0 {
+            match clip_three_soft(cigar, xm, three_soft_clip) {
+                Some((new_cigar, new_xm)) => {
+                    cigar = new_cigar;
+                    xm = new_xm;
+                }
+                None => return None,
+            }
+        }
+
         Some((cigar, pos, xm))
+    }
+
+    pub fn total_m(&self) -> u32 {
+        self.total_m
+    }
+
+    pub fn total_sm(&self) -> u32 {
+        self.total_sm
+    }
+
+    pub fn total_ms(&self) -> u32 {
+        self.total_ms
+    }
+
+    pub fn total_sms(&self) -> u32 {
+        self.total_sms
+    }
+
+    pub fn total(&self) -> u32 {
+        self.total_m + self.total_sm + self.total_ms + self.total_sms
+    }
+
+    fn count_cigar(&mut self, cigar: &[Cigar]) {
+        let leading_softclips = cigar.first().map_or(0, |cigar| {
+            if let Cigar::SoftClip(s) = cigar {
+                *s as i32
+            } else {
+                0
+            }
+        });
+
+        let trailing_softclips = cigar.last().map_or(0, |cigar| {
+            if let Cigar::SoftClip(s) = cigar {
+                *s as i32
+            } else {
+                0
+            }
+        });
+
+        if leading_softclips == 0 && trailing_softclips == 0 {
+            self.total_m += 1;
+        } else if leading_softclips > 0 && trailing_softclips == 0 {
+            self.total_sm += 1;
+        } else if leading_softclips == 0 && trailing_softclips > 0 {
+            self.total_ms += 1;
+        } else {
+            self.total_sms += 1;
+        }
     }
 }
 
@@ -443,6 +545,124 @@ fn clip_five_prime(
 
 fn clip_three_prime(cigar: Vec<Cigar>, xm: Vec<u8>, clip: u32) -> Option<(Vec<Cigar>, Vec<u8>)> {
     if let Some(Cigar::Match(_)) = cigar.last() {
+        let mut new_cigar: Vec<Cigar> = Vec::new();
+        let mut end = xm.len() as i32;
+        let mut clip = clip;
+
+        let mut cigar_iter = cigar.into_iter().rev();
+        while let Some(c) = cigar_iter.next() {
+            if clip == 0 {
+                new_cigar.push(c);
+                continue;
+            }
+            match c {
+                Cigar::Match(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Match(len - clip));
+                        end -= clip as i32;
+                        clip = 0;
+                    } else {
+                        end -= len as i32;
+                        clip -= len;
+                    }
+                }
+                Cigar::Ins(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Ins(len - clip));
+                        end -= clip as i32;
+                        clip = 0;
+                    } else {
+                        end -= len as i32;
+                        clip -= len;
+                    }
+                }
+                Cigar::Del(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Del(len - clip));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if end > 0 {
+            new_cigar.reverse();
+            let end = end as usize;
+            Some((new_cigar, xm[..end].to_vec()))
+        } else {
+            None
+        }
+    } else {
+        Some((cigar, xm))
+    }
+}
+
+fn clip_five_soft(
+    cigar: Vec<Cigar>,
+    pos: u64,
+    xm: Vec<u8>,
+    clip: u32,
+) -> Option<(Vec<Cigar>, u64, Vec<u8>)> {
+    if let Some(Cigar::SoftClip(_)) = cigar.first() {
+        let mut new_cigar: Vec<Cigar> = Vec::new();
+        let mut pos = pos;
+        let mut start = 0;
+        let mut clip = clip;
+
+        let mut cigar_iter = cigar.into_iter();
+        while let Some(c) = cigar_iter.next() {
+            if clip == 0 {
+                new_cigar.push(c);
+                continue;
+            }
+            match c {
+                Cigar::Match(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Match(len - clip));
+                        start += clip;
+                        pos += clip as u64;
+                        clip = 0;
+                    } else {
+                        start += len;
+                        pos += len as u64;
+                        clip -= len;
+                    }
+                }
+                Cigar::Ins(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Ins(len - clip));
+                        start += clip;
+                        clip = 0;
+                    } else {
+                        start += len;
+                        clip -= len;
+                    }
+                }
+                Cigar::Del(len) => {
+                    if len > clip {
+                        new_cigar.push(Cigar::Del(len - clip));
+                        pos += clip as u64;
+                    } else {
+                        pos += len as u64;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let start = start as usize;
+        if start < xm.len() {
+            Some((new_cigar, pos, xm[start..].to_vec()))
+        } else {
+            None
+        }
+    } else {
+        Some((cigar, pos, xm))
+    }
+}
+
+fn clip_three_soft(cigar: Vec<Cigar>, xm: Vec<u8>, clip: u32) -> Option<(Vec<Cigar>, Vec<u8>)> {
+    if let Some(Cigar::SoftClip(_)) = cigar.last() {
         let mut new_cigar: Vec<Cigar> = Vec::new();
         let mut end = xm.len() as i32;
         let mut clip = clip;
