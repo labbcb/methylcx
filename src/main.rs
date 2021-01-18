@@ -32,9 +32,17 @@ struct Opts {
     /// Counts of (un)methylated and coverage across cycles (CSV).
     #[clap(long, parse(from_os_str))]
     mbias: Option<PathBuf>,
-    /// Counts of (un)methylated and coverage across genome (cov, gzipped).
+
+    /// Counts of (un)methylated and coverage across genome in CpG-context (cov, gzipped).
     #[clap(long, parse(from_os_str))]
-    bismark_cov: Option<PathBuf>,
+    cpg_bismark_cov: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHG-context (cov, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_bismark_cov: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHH-context (cov, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_bismark_cov: Option<PathBuf>,
+
     /// Counts of (un)methylated and coverage across genome (bedGraph, gzipped).
     #[clap(long, parse(from_os_str))]
     bed_graph: Option<PathBuf>,
@@ -70,16 +78,19 @@ fn main() {
         None
     };
 
-    let mut cytosine_genome =
-        if opts.bismark_cov.is_some() || opts.bed_graph.is_some() || opts.cytosine_report.is_some()
-        {
-            if opts.cytosine_report.is_some() && opts.genome.is_none() {
-                panic!("mising reference genome file");
-            }
-            Some(CytosineGenome::new(chrs))
-        } else {
-            None
-        };
+    let run_cytosine_genome = opts.cpg_bismark_cov.is_some()
+        || opts.chg_bismark_cov.is_some()
+        || opts.chh_bismark_cov.is_some()
+        || opts.bed_graph.is_some()
+        || opts.cytosine_report.is_some();
+    let mut cytosine_genome = if run_cytosine_genome {
+        if opts.cytosine_report.is_some() && opts.genome.is_none() {
+            panic!("mising reference genome file");
+        }
+        Some(CytosineGenome::new(chrs))
+    } else {
+        None
+    };
 
     let config = ClipperConfig {
         five_prime_clip: opts.five_prime_clip,
@@ -146,9 +157,19 @@ fn main() {
         write_mbias(cytosine_read.as_ref().unwrap(), &mut writer).unwrap();
     }
 
-    if let Some(output) = opts.bismark_cov {
+    if let Some(output) = opts.cpg_bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(cytosine_genome.as_ref().unwrap(), &mut writer).unwrap();
+        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CpG, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chg_bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CHG, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chh_bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CHH, &mut writer).unwrap();
     }
 
     if let Some(output) = opts.bed_graph {
@@ -178,6 +199,12 @@ fn main() {
     if let Some(task) = cytosine_read.as_ref() {
         report_read_stats(task);
     }
+}
+
+enum Context {
+    CpG,
+    CHG,
+    CHH,
 }
 
 fn write_clipper_stats(clipper: &Clipper) {
@@ -308,9 +335,15 @@ fn write_bed_graph(
 
 fn write_bismark_cov(
     cytosine_genome: &CytosineGenome,
+    context: Context,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
-    for (chr, xs) in cytosine_genome.cpg() {
+    let map = match context {
+        Context::CpG => cytosine_genome.cpg(),
+        Context::CHG => cytosine_genome.chg(),
+        Context::CHH => cytosine_genome.chh(),
+    };
+    for (chr, xs) in map {
         for (pos, (m, u, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}", chr, pos, pos, perc, m, u)?;
