@@ -43,9 +43,16 @@ struct Opts {
     #[clap(long, parse(from_os_str))]
     chh_bismark_cov: Option<PathBuf>,
 
-    /// Counts of (un)methylated and coverage across genome (bedGraph, gzipped).
+    /// Counts of (un)methylated and coverage across genome in CpG-context (bedGraph, gzipped).
     #[clap(long, parse(from_os_str))]
-    bed_graph: Option<PathBuf>,
+    cpg_bed_graph: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHG-context (bedGraph, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_bed_graph: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHH-context (bedGraph, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_bed_graph: Option<PathBuf>,
+
     /// Strand-specific counts of (un)methylated CpG across genome (cytosine-report, gzipped).
     #[clap(long, parse(from_os_str))]
     cytosine_report: Option<PathBuf>,
@@ -81,7 +88,9 @@ fn main() {
     let run_cytosine_genome = opts.cpg_bismark_cov.is_some()
         || opts.chg_bismark_cov.is_some()
         || opts.chh_bismark_cov.is_some()
-        || opts.bed_graph.is_some()
+        || opts.cpg_bed_graph.is_some()
+        || opts.chg_bed_graph.is_some()
+        || opts.chh_bed_graph.is_some()
         || opts.cytosine_report.is_some();
     let mut cytosine_genome = if run_cytosine_genome {
         if opts.cytosine_report.is_some() && opts.genome.is_none() {
@@ -172,9 +181,19 @@ fn main() {
         write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CHH, &mut writer).unwrap();
     }
 
-    if let Some(output) = opts.bed_graph {
+    if let Some(output) = opts.cpg_bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(cytosine_genome.as_ref().unwrap(), &mut writer).unwrap();
+        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CpG, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chg_bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CHG, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chh_bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CHH, &mut writer).unwrap();
     }
 
     if let Some(output) = opts.cytosine_report {
@@ -321,10 +340,16 @@ fn write_mbias(cytosine_read: &CytosineRead, writer: &mut File) -> io::Result<()
 
 fn write_bed_graph(
     cytosine_genome: &CytosineGenome,
+    context: Context,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
+    let map = match context {
+        Context::CpG => cytosine_genome.cpg(),
+        Context::CHG => cytosine_genome.chg(),
+        Context::CHH => cytosine_genome.chh(),
+    };
     writer.write_all(b"track type=bedGraph\n")?;
-    for (chr, xs) in cytosine_genome.cpg() {
+    for (chr, xs) in map {
         for (pos, (m, _, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}", chr, pos - 1, pos, perc)?;
