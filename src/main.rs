@@ -349,7 +349,8 @@ fn write_bed_graph(
         Context::CHH => cytosine_genome.chh(),
     };
     writer.write_all(b"track type=bedGraph\n")?;
-    for (chr, xs) in map {
+    for chr in cytosine_genome.chrs() {
+        let xs = map.get(chr).unwrap();
         for (pos, (m, _, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}", chr, pos - 1, pos, perc)?;
@@ -368,7 +369,8 @@ fn write_bismark_cov(
         Context::CHG => cytosine_genome.chg(),
         Context::CHH => cytosine_genome.chh(),
     };
-    for (chr, xs) in map {
+    for chr in cytosine_genome.chrs() {
+        let xs = map.get(chr).unwrap();
         for (pos, (m, u, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}", chr, pos, pos, perc, m, u)?;

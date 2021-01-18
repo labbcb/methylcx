@@ -314,6 +314,10 @@ impl CytosineGenome {
     pub fn chh(&self) -> &BTreeMap<String, BTreeMap<u64, (u32, u32, u32)>> {
         &self.chh
     }
+
+    pub fn chrs(&self) -> &[String] {
+        &self.chrs
+    }
 }
 
 pub struct ClipperConfig {
