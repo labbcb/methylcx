@@ -53,12 +53,17 @@ struct Opts {
     #[clap(long, parse(from_os_str))]
     chh_bed_graph: Option<PathBuf>,
 
+    /// Minimum coverage to report loci. To output every loci see --cytosine-report.
+    #[clap(long, default_value = "1")]
+    min_coverage: u32,
+
     /// Strand-specific counts of (un)methylated CpG across genome (cytosine-report, gzipped).
     #[clap(long, parse(from_os_str))]
     cytosine_report: Option<PathBuf>,
-    /// Reference genome file (FASTA format). Only required for --cytosine report.
+    /// Reference genome file (FASTA format). Only required for --cytosine-report.
     #[clap(long, parse(from_os_str))]
     genome: Option<PathBuf>,
+
     /// Starting vector capacity to store per sequencing cycles data.
     #[clap(long, default_value = "200")]
     start_capacity: usize,
@@ -168,32 +173,68 @@ fn main() {
 
     if let Some(output) = opts.cpg_bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CpG, &mut writer).unwrap();
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CpG,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.chg_bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CHG, &mut writer).unwrap();
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHG,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.chh_bismark_cov {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bismark_cov(cytosine_genome.as_ref().unwrap(), Context::CHH, &mut writer).unwrap();
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHH,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.cpg_bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CpG, &mut writer).unwrap();
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CpG,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.chg_bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CHG, &mut writer).unwrap();
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHG,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.chh_bed_graph {
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_bed_graph(cytosine_genome.as_ref().unwrap(), Context::CHH, &mut writer).unwrap();
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHH,
+            &mut writer,
+        )
+        .unwrap();
     }
 
     if let Some(output) = opts.cytosine_report {
@@ -340,9 +381,12 @@ fn write_mbias(cytosine_read: &CytosineRead, writer: &mut File) -> io::Result<()
 
 fn write_bed_graph(
     cytosine_genome: &CytosineGenome,
+    min_coverage: u32,
     context: Context,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
+    assert_ne!(min_coverage, 0, "min_coverage must be larger than 0");
+
     let map = match context {
         Context::CpG => cytosine_genome.cpg(),
         Context::CHG => cytosine_genome.chg(),
@@ -352,6 +396,9 @@ fn write_bed_graph(
     for chr in cytosine_genome.chrs() {
         let xs = map.get(chr).unwrap();
         for (pos, (m, _, cov)) in xs {
+            if *cov < min_coverage {
+                continue;
+            }
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}", chr, pos - 1, pos, perc)?;
         }
@@ -361,9 +408,12 @@ fn write_bed_graph(
 
 fn write_bismark_cov(
     cytosine_genome: &CytosineGenome,
+    min_coverage: u32,
     context: Context,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
+    assert_ne!(min_coverage, 0, "min_coverage must be larger than 0");
+
     let map = match context {
         Context::CpG => cytosine_genome.cpg(),
         Context::CHG => cytosine_genome.chg(),
@@ -372,6 +422,9 @@ fn write_bismark_cov(
     for chr in cytosine_genome.chrs() {
         let xs = map.get(chr).unwrap();
         for (pos, (m, u, cov)) in xs {
+            if *cov < min_coverage {
+                continue;
+            }
             let perc = *m as f64 / *cov as f64 * 100.0;
             writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}", chr, pos, pos, perc, m, u)?;
         }
