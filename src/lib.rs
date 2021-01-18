@@ -86,7 +86,9 @@ impl CytosineRead {
         }
     }
 
-    pub fn process(&mut self, xm: &[u8], reverse: bool, cigar: &[Cigar]) {
+    pub fn process(&mut self, xm: &[u8], reverse: bool, cigar: &[Cigar]) -> Result<(), String> {
+        self.resize(xm.len());
+
         let mut cigar = cigar.to_owned();
         let mut xm = xm.to_owned();
         if reverse {
@@ -94,34 +96,46 @@ impl CytosineRead {
             cigar.reverse();
         }
 
-        let filter: Vec<_> = cigar
-            .iter()
-            .flat_map(|c| {
-                let keep = c.char() != 'S' || c.char() != 'I';
-                vec![keep; c.len() as usize]
-            })
-            .collect();
+        let mut idx = 0;
+        let mut xm_iter = xm.iter();
+        for c in cigar.into_iter() {
+            match c {
+                Cigar::Match(len) => {
+                    let len = len as usize;
+                    for _ in 0..len {
+                        let &b = xm_iter.next().unwrap();
 
-        let xm: Vec<_> = xm
-            .iter()
-            .zip(filter)
-            .filter(|(_, y)| *y)
-            .map(|(x, _)| *x)
-            .collect();
+                        match b {
+                            b'X' => self.chg.add_methylated(idx, 1),
+                            b'x' => self.chg.add_unmethylated(idx, 1),
+                            b'H' => self.chh.add_methylated(idx, 1),
+                            b'h' => self.chh.add_unmethylated(idx, 1),
+                            b'Z' => self.cpg.add_methylated(idx, 1),
+                            b'z' => self.cpg.add_unmethylated(idx, 1),
+                            _ => {}
+                        }
 
-        self.resize(xm.len());
-
-        for (i, &b) in xm.iter().enumerate() {
-            match b {
-                b'X' => self.chg.add_methylated(i, 1),
-                b'x' => self.chg.add_unmethylated(i, 1),
-                b'H' => self.chh.add_methylated(i, 1),
-                b'h' => self.chh.add_unmethylated(i, 1),
-                b'Z' => self.cpg.add_methylated(i, 1),
-                b'z' => self.cpg.add_unmethylated(i, 1),
-                _ => {}
+                        idx += 1;
+                    }
+                }
+                Cigar::SoftClip(len) => {
+                    let len = len as usize;
+                    for _ in 0..len {
+                        xm_iter.next();
+                    }
+                }
+                Cigar::Ins(len) => {
+                    let len = len as usize;
+                    for _ in 0..len {
+                        xm_iter.next();
+                    }
+                    idx += len;
+                }
+                Cigar::Del(_) => {}
+                _ => return Err(format!("invalid CIGAR operation {}", c.char())),
             }
         }
+        Ok(())
     }
 
     pub fn resize(&mut self, new_len: usize) {
@@ -232,18 +246,18 @@ impl CytosineGenome {
     pub fn process(
         &mut self,
         pos: u64,
-        chr: String,
+        chr: &String,
         xm: &[u8],
         cigar: &[Cigar],
     ) -> Result<(), String> {
-        if !self.chrs.contains(&chr) {
+        if !self.chrs.contains(chr) {
             return Err(format!("invalid chromosome {}", chr));
         }
 
-        let cpg = self.cpg.get_mut(&chr).unwrap();
-        let chg = self.chg.get_mut(&chr).unwrap();
-        let chh = self.chh.get_mut(&chr).unwrap();
-        let unknown = self.unknown.get_mut(&chr).unwrap();
+        let cpg = self.cpg.get_mut(chr).unwrap();
+        let chg = self.chg.get_mut(chr).unwrap();
+        let chh = self.chh.get_mut(chr).unwrap();
+        let unknown = self.unknown.get_mut(chr).unwrap();
 
         let mut pos = pos;
         let mut xm_iter = xm.iter();
@@ -276,14 +290,12 @@ impl CytosineGenome {
                     }
                 }
                 Cigar::Ins(len) | Cigar::SoftClip(len) => {
-                    let len = *len as usize;
-                    for _ in 0..len {
+                    for _ in 0..*len as usize {
                         xm_iter.next();
                     }
                 }
                 Cigar::Del(len) => {
-                    let len = *len as u64;
-                    pos += len;
+                    pos += *len as u64;
                 }
                 _ => return Err(format!("invalid CIGAR operation {}", c.char())),
             }
@@ -301,5 +313,176 @@ impl CytosineGenome {
 
     pub fn chh(&self) -> &BTreeMap<String, BTreeMap<u64, (u32, u32, u32)>> {
         &self.chh
+    }
+}
+
+pub struct Clipper {
+    pub five_prime_clip: u32,
+    pub three_prime_clip: u32,
+}
+
+/// Clipper trims first and/or last bases from a sequence and updates CIGAR string and POS value.
+/// When five_prime_clip is larger than 0 it trims bases from the begining of sequence.
+/// WHen three_prime_clip is larger than 0 it trims bases from the end of sequence.
+/// If sequence was aligned in reverse mode then values of five_prime_clip and three_prime_clip are swapped.
+/// CIGAR operations are considered while trimming bases.
+/// The algorithm walks to CIGAR operations until there are bases to clip.
+/// Matches (M) consume bases to clip, update POS and trim sequence.
+/// Insertions (I) consume bases to clip and trim sequence. POS is not altered.
+/// Deletions (D) update POS. Sequence is not trimmed and bases to clip is not clipped.
+impl Clipper {
+    pub fn process(
+        &self,
+        cigar: Vec<Cigar>,
+        pos: u64,
+        xm: Vec<u8>,
+        reverse: bool,
+    ) -> Option<(Vec<Cigar>, u64, Vec<u8>)> {
+        let five_prime_clip = if reverse {
+            self.three_prime_clip
+        } else {
+            self.five_prime_clip
+        };
+        let three_prime_clip = if reverse {
+            self.five_prime_clip
+        } else {
+            self.three_prime_clip
+        };
+
+        let mut cigar = cigar;
+        let mut pos = pos;
+        let mut xm = xm;
+        if five_prime_clip > 0 {
+            match clip_five_prime(cigar, pos, xm, five_prime_clip) {
+                Some((new_cigar, new_pos, new_xm)) => {
+                    cigar = new_cigar;
+                    pos = new_pos;
+                    xm = new_xm;
+                }
+                None => return None,
+            }
+        }
+
+        if three_prime_clip > 0 {
+            match clip_three_prime(cigar, xm, three_prime_clip) {
+                Some((new_cigar, new_xm)) => {
+                    cigar = new_cigar;
+                    xm = new_xm;
+                }
+                None => return None,
+            }
+        }
+
+        Some((cigar, pos, xm))
+    }
+}
+
+fn clip_five_prime(
+    cigar: Vec<Cigar>,
+    pos: u64,
+    xm: Vec<u8>,
+    clip: u32,
+) -> Option<(Vec<Cigar>, u64, Vec<u8>)> {
+    let mut new_cigar: Vec<Cigar> = Vec::new();
+    let mut pos = pos;
+    let mut start = 0;
+    let mut clip = clip;
+
+    let mut cigar_iter = cigar.into_iter();
+    while let Some(c) = cigar_iter.next() {
+        if clip == 0 {
+            new_cigar.push(c);
+            continue;
+        }
+        match c {
+            Cigar::Match(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Match(len - clip));
+                    start += clip;
+                    pos += clip as u64;
+                    clip = 0;
+                } else {
+                    start += len;
+                    pos += len as u64;
+                    clip -= len;
+                }
+            }
+            Cigar::Ins(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Ins(len - clip));
+                    start += clip;
+                    clip = 0;
+                } else {
+                    start += len;
+                    clip -= len;
+                }
+            }
+            Cigar::Del(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Del(len - clip));
+                    pos += clip as u64;
+                } else {
+                    pos += len as u64;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let start = start as usize;
+    if start < xm.len() {
+        Some((new_cigar, pos, xm[start..].to_vec()))
+    } else {
+        None
+    }
+}
+
+fn clip_three_prime(cigar: Vec<Cigar>, xm: Vec<u8>, clip: u32) -> Option<(Vec<Cigar>, Vec<u8>)> {
+    let mut new_cigar: Vec<Cigar> = Vec::new();
+    let mut end = xm.len() as i32;
+    let mut clip = clip;
+
+    let mut cigar_iter = cigar.into_iter().rev();
+    while let Some(c) = cigar_iter.next() {
+        if clip == 0 {
+            new_cigar.push(c);
+            continue;
+        }
+        match c {
+            Cigar::Match(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Match(len - clip));
+                    end -= clip as i32;
+                    clip = 0;
+                } else {
+                    end -= len as i32;
+                    clip -= len;
+                }
+            }
+            Cigar::Ins(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Ins(len - clip));
+                    end -= clip as i32;
+                    clip = 0;
+                } else {
+                    end -= len as i32;
+                    clip -= len;
+                }
+            }
+            Cigar::Del(len) => {
+                if len > clip {
+                    new_cigar.push(Cigar::Del(len - clip));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if end > 0 {
+        new_cigar.reverse();
+        let end = end as usize;
+        Some((new_cigar, xm[..end].to_vec()))
+    } else {
+        None
     }
 }

@@ -2,7 +2,7 @@ use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use methylcx::{CytosineGenome, CytosineRead};
+use methylcx::{Clipper, CytosineGenome, CytosineRead};
 use rust_htslib::{bam, bam::Read};
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,6 +14,15 @@ struct Opts {
     /// Input mapped reads by Bismark aligner (BAM/SAM/CRAM).
     #[clap(parse(from_os_str))]
     input: PathBuf,
+    /// Clip first bases of aligned sequence in end-to-end mode (5' orientation).
+    #[clap(long, default_value = "0")]
+    five_prime_clip: u32,
+    /// Clip last bases of aligned sequence in end-to-end mode (3' orientation).
+    #[clap(long, default_value = "0")]
+    three_prime_clip: u32,
+    /// Minimum read length.
+    #[clap(long, default_value = "0")]
+    min_length: u32,
     /// Counts of (un)methylated and coverage across cycles (CSV).
     #[clap(long, parse(from_os_str))]
     mbias: Option<PathBuf>,
@@ -49,10 +58,12 @@ fn main() {
         .collect();
 
     // Instanciate processing tasks on demand.
-    let mut cytosine_read = opts
-        .mbias
-        .as_ref()
-        .and(Some(CytosineRead::new(opts.start_capacity)));
+    let mut cytosine_read = if opts.mbias.is_some() {
+        Some(CytosineRead::new(opts.start_capacity))
+    } else {
+        None
+    };
+
     let mut cytosine_genome =
         if opts.bismark_cov.is_some() || opts.bed_graph.is_some() || opts.cytosine_report.is_some()
         {
@@ -64,9 +75,17 @@ fn main() {
             None
         };
 
+    let clipper = Clipper {
+        five_prime_clip: opts.five_prime_clip,
+        three_prime_clip: opts.three_prime_clip,
+    };
+
     // Get statistics about mapped reads.
-    let mut total = 0;
-    let mut total_valid = 0;
+    let mut total: u32 = 0;
+    let mut total_valid: u32 = 0;
+    let mut total_removed: u32 = 0;
+
+    let min_length = opts.min_length as usize;
 
     // Iterate over the entire input file.
     let mut record = bam::Record::new();
@@ -80,18 +99,36 @@ fn main() {
         }
         total_valid += 1;
 
-        let chr = bam.header().tid2name(record.tid() as u32).to_owned();
-        let chr = String::from_utf8(chr).unwrap();
-        let cigar = record.cigar().to_vec();
-        let xm = record.aux(b"XM").unwrap().string();
+        let chr = bam.header().tid2name(record.tid() as u32);
+        let chr = String::from_utf8(chr.to_vec()).unwrap();
+
+        let mut pos = (record.pos() + 1) as u64;
+        let mut cigar = record.cigar().to_vec();
+        let mut xm = record.aux(b"XM").unwrap().string().to_vec();
+        let reverse = is_reverse(&record).unwrap();
+
+        match clipper.process(cigar, pos, xm, reverse) {
+            Some((new_cigar, new_pos, new_xm)) => {
+                cigar = new_cigar;
+                pos = new_pos;
+                xm = new_xm;
+            }
+            None => {
+                total_removed += 1;
+                continue;
+            }
+        }
+
+        if xm.len() < min_length {
+            total_removed += 1;
+            continue;
+        }
 
         if let Some(task) = cytosine_read.as_mut() {
-            let reverse = is_reverse(&record).unwrap();
-            task.process(xm, reverse, &cigar);
+            task.process(&xm, reverse, &cigar).unwrap();
         }
         if let Some(task) = cytosine_genome.as_mut() {
-            let pos = record.pos() as u64 + 1;
-            task.process(pos, chr, xm, &cigar).unwrap();
+            task.process(pos, &chr, &xm, &cigar).unwrap();
         }
     }
 
@@ -123,6 +160,11 @@ fn main() {
         total_valid, percent_valid
     );
 
+    println!(
+        "Removed:                {} ({} %)",
+        total_removed,
+        total_removed as f32 / total as f32 * 100.0
+    );
     if let Some(task) = cytosine_read.as_ref() {
         report_read_stats(task);
     }
@@ -237,16 +279,7 @@ fn write_bismark_cov(
     for (chr, xs) in cytosine_genome.cpg() {
         for (pos, (m, u, cov)) in xs {
             let perc = *m as f64 / *cov as f64 * 100.0;
-            writeln!(
-                writer,
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                chr,
-                pos,
-                pos + 1,
-                perc,
-                m,
-                u
-            )?;
+            writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}", chr, pos, pos, perc, m, u)?;
         }
     }
     return Ok(());
