@@ -11,7 +11,7 @@ use std::{fs::File, io};
 
 #[derive(Clap)]
 struct Opts {
-    /// Input mapped reads by Bismark aligner (BAM/SAM/CRAM).
+    /// Input mapped reads by Bismark aligner (BAM/SAM).
     #[clap(parse(from_os_str))]
     input: PathBuf,
     /// Clip first bases of aligned sequence in end-to-end mode (5' orientation).
@@ -59,7 +59,14 @@ struct Opts {
 
     /// Strand-specific counts of (un)methylated CpG across genome (cytosine-report, gzipped).
     #[clap(long, parse(from_os_str))]
-    cytosine_report: Option<PathBuf>,
+    cpg_cytosine_report: Option<PathBuf>,
+    /// Strand-specific counts of (un)methylated CHG across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_cytosine_report: Option<PathBuf>,
+    /// Strand-specific counts of (un)methylated CHH across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_cytosine_report: Option<PathBuf>,
+
     /// Reference genome file (FASTA format). Only required for --cytosine-report.
     #[clap(long, parse(from_os_str))]
     genome: Option<PathBuf>,
@@ -96,9 +103,11 @@ fn main() {
         || opts.cpg_bed_graph.is_some()
         || opts.chg_bed_graph.is_some()
         || opts.chh_bed_graph.is_some()
-        || opts.cytosine_report.is_some();
+        || opts.cpg_cytosine_report.is_some()
+        || opts.chg_cytosine_report.is_some()
+        || opts.chh_cytosine_report.is_some();
     let mut cytosine_genome = if run_cytosine_genome {
-        if opts.cytosine_report.is_some() && opts.genome.is_none() {
+        if opts.cpg_cytosine_report.is_some() && opts.genome.is_none() {
             panic!("mising reference genome file");
         }
         Some(CytosineGenome::new(chrs))
@@ -237,10 +246,22 @@ fn main() {
         .unwrap();
     }
 
-    if let Some(output) = opts.cytosine_report {
-        let genome = opts.genome.unwrap();
+    if let Some(output) = opts.cpg_cytosine_report {
+        let genome = opts.genome.as_ref().unwrap();
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
-        write_cytosine_report(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+        write_cytosine_report_cpg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chg_cytosine_report {
+        let genome = opts.genome.as_ref().unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report_chg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chh_cytosine_report {
+        let genome = opts.genome.as_ref().unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report_chh(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
     }
 
     let percent_valid = total_valid as f32 / total as f32 * 100.0;
@@ -261,10 +282,33 @@ fn main() {
     }
 }
 
+#[derive(PartialEq)]
 enum Context {
     CpG,
     CHG,
     CHH,
+}
+
+impl Context {
+    fn parse(triplet: &[u8]) -> Option<Context> {
+        if triplet[0] != b'C' && triplet[0] != b'c' {
+            None
+        } else if triplet[1] == b'G' || triplet[1] == b'g' {
+            Some(Context::CpG)
+        } else if triplet[2] == b'G' || triplet[2] == b'g' {
+            Some(Context::CHG)
+        } else {
+            Some(Context::CHH)
+        }
+    }
+
+    // TODO: could be `Context::parse(triplet).contains(context)`?
+    fn is(triplet: &[u8], context: Context) -> bool {
+        match Context::parse(triplet) {
+            Some(ctx) => ctx == context,
+            None => false,
+        }
+    }
 }
 
 fn write_clipper_stats(clipper: &Clipper) {
@@ -291,7 +335,7 @@ fn write_clipper_stats(clipper: &Clipper) {
     );
 }
 
-fn write_cytosine_report(
+fn write_cytosine_report_cpg(
     cytosine_genome: &CytosineGenome,
     genome: &PathBuf,
     writer: &mut GzEncoder<File>,
@@ -341,6 +385,111 @@ fn write_cytosine_report(
                 m,
                 u,
                 std::str::from_utf8(&dna::revcomp(&seq[idx - 1..idx + 2])).unwrap()
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_cytosine_report_chg(
+    cytosine_genome: &CytosineGenome,
+    genome: &PathBuf,
+    writer: &mut GzEncoder<File>,
+) -> io::Result<()> {
+    let reader = fasta::Reader::from_file(genome)?;
+    let mut records = reader.records();
+    while let Some(Ok(record)) = records.next() {
+        let id = record.id();
+        let seq = record.seq();
+
+        let chg = match cytosine_genome.chg().get(id) {
+            Some(value) => value,
+            None => {
+                continue;
+            }
+        };
+
+        let mut pos = 0;
+        for idx in 0..seq.len() - 2 {
+            pos += 1;
+
+            let triplet = &seq[idx..idx + 3];
+            if !Context::is(triplet, Context::CHG) {
+                continue;
+            }
+
+            let (m, u, _) = chg.get(&pos).unwrap_or(&(0, 0, 0));
+
+            writeln!(
+                writer,
+                "{}\t{}\t+\t{}\t{}\tCG\t{}",
+                id,
+                pos,
+                m,
+                u,
+                std::str::from_utf8(triplet).unwrap()
+            )?;
+
+            let (m, u, _) = chg.get(&(pos + 2)).unwrap_or(&(0, 0, 0));
+
+            writeln!(
+                writer,
+                "{}\t{}\t-\t{}\t{}\tCG\t{}",
+                id,
+                pos + 1,
+                m,
+                u,
+                std::str::from_utf8(&dna::revcomp(triplet)).unwrap()
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_cytosine_report_chh(
+    cytosine_genome: &CytosineGenome,
+    genome: &PathBuf,
+    writer: &mut GzEncoder<File>,
+) -> io::Result<()> {
+    let reader = fasta::Reader::from_file(genome)?;
+    let mut records = reader.records();
+    while let Some(Ok(record)) = records.next() {
+        let id = record.id();
+        let seq = record.seq();
+
+        let chh = match cytosine_genome.chh().get(id) {
+            Some(value) => value,
+            None => {
+                continue;
+            }
+        };
+
+        let mut pos = 0;
+        for triplet in seq.windows(3) {
+            pos += 1;
+
+            let triplet_rev = dna::revcomp(triplet);
+            let (pos, strand, triplet) = if Context::is(triplet, Context::CHH) {
+                (pos, "+", triplet)
+            } else if Context::is(&triplet_rev, Context::CHH) {
+                (pos + 2, "-", triplet_rev.as_slice())
+            } else {
+                continue;
+            };
+
+            let (m, u, _) = chh.get(&pos).unwrap_or(&(0, 0, 0));
+
+            writeln!(
+                writer,
+                "{}\t{}\t{}\t{}\t{}\tCHH\t{}",
+                id,
+                pos,
+                strand,
+                m,
+                u,
+                std::str::from_utf8(triplet).unwrap()
             )?;
         }
     }
