@@ -1,5 +1,6 @@
 use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use methylcx::{Clipper, ClipperConfig, CytosineGenome, CytosineRead};
@@ -67,7 +68,7 @@ struct Opts {
     #[clap(long, parse(from_os_str))]
     chh_cytosine_report: Option<PathBuf>,
 
-    /// Reference genome file (FASTA format). Only required for --cytosine-report.
+    /// Reference genome file (FASTA format, gzipped). Only required for --cytosine-report.
     #[clap(long, parse(from_os_str))]
     genome: Option<PathBuf>,
 
@@ -247,19 +248,19 @@ fn main() {
     }
 
     if let Some(output) = opts.cpg_cytosine_report {
-        let genome = opts.genome.as_ref().unwrap();
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
         write_cytosine_report_cpg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
     }
 
     if let Some(output) = opts.chg_cytosine_report {
-        let genome = opts.genome.as_ref().unwrap();
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
         write_cytosine_report_chg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
     }
 
     if let Some(output) = opts.chh_cytosine_report {
-        let genome = opts.genome.as_ref().unwrap();
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
         let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
         write_cytosine_report_chh(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
     }
@@ -337,10 +338,11 @@ fn write_clipper_stats(clipper: &Clipper) {
 
 fn write_cytosine_report_cpg(
     cytosine_genome: &CytosineGenome,
-    genome: &PathBuf,
+    genome: &File,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
-    let reader = fasta::Reader::from_file(genome)?;
+    let reader = fasta::Reader::new(GzDecoder::new(genome));
+
     let mut records = reader.records();
     while let Some(Ok(record)) = records.next() {
         let id = record.id();
@@ -394,10 +396,10 @@ fn write_cytosine_report_cpg(
 
 fn write_cytosine_report_chg(
     cytosine_genome: &CytosineGenome,
-    genome: &PathBuf,
+    genome: &File,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
-    let reader = fasta::Reader::from_file(genome)?;
+    let reader = fasta::Reader::new(GzDecoder::new(genome));
     let mut records = reader.records();
     while let Some(Ok(record)) = records.next() {
         let id = record.id();
@@ -450,10 +452,10 @@ fn write_cytosine_report_chg(
 
 fn write_cytosine_report_chh(
     cytosine_genome: &CytosineGenome,
-    genome: &PathBuf,
+    genome: &File,
     writer: &mut GzEncoder<File>,
 ) -> io::Result<()> {
-    let reader = fasta::Reader::from_file(genome)?;
+    let reader = fasta::Reader::new(GzDecoder::new(genome));
     let mut records = reader.records();
     while let Some(Ok(record)) = records.next() {
         let id = record.id();
