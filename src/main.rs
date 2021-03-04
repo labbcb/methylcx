@@ -4,14 +4,46 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use methylcx::{Clipper, ClipperConfig, CytosineGenome, CytosineRead};
-use rust_htslib::{bam, bam::Read};
+use rust_htslib::{
+    bam,
+    bam::{record::Cigar, Read},
+};
 use std::io::Write;
 use std::path::PathBuf;
-use std::usize;
+use std::{collections::HashSet, usize};
 use std::{fs::File, io};
 
 #[derive(Clap)]
 struct Opts {
+    #[clap(subcommand)]
+    subcmd: SubCommand,
+}
+
+#[derive(Clap)]
+enum SubCommand {
+    Deduplicate(DeduplicateOpts),
+    Extract(ExtractOpts),
+}
+
+/// Removes duplicated reads while keeping the first one
+#[derive(Clap)]
+struct DeduplicateOpts {
+    /// Input mapped reads by Bismark aligner (BAM/SAM).
+    #[clap(parse(from_os_str))]
+    input: PathBuf,
+
+    /// Output deduplicated reads (BAM).
+    #[clap(parse(from_os_str))]
+    output: PathBuf,
+
+    /// Either is paired-end sequencing or single-end (default)
+    #[clap(long)]
+    paired: bool,
+}
+
+/// Calculates DNA methylation across genome
+#[derive(Clap)]
+struct ExtractOpts {
     /// Input mapped reads by Bismark aligner (BAM/SAM).
     #[clap(parse(from_os_str))]
     input: PathBuf,
@@ -80,6 +112,150 @@ struct Opts {
 fn main() {
     let opts: Opts = Opts::parse();
 
+    match opts.subcmd {
+        SubCommand::Deduplicate(opts) => deduplicate(opts),
+        SubCommand::Extract(opts) => extract(opts),
+    }
+}
+
+fn deduplicate(opts: DeduplicateOpts) {
+    let mut input_bam = bam::Reader::from_path(&opts.input).unwrap();
+    let header = bam::Header::from_template(input_bam.header());
+
+    let mut output_bam = bam::Writer::from_path(opts.output, &header, bam::Format::BAM).unwrap();
+
+    let mut unique_seqs = HashSet::new();
+
+    let total = if opts.paired {
+        deduplicate_paired(&mut input_bam, &mut unique_seqs, &mut output_bam)
+    } else {
+        deduplicate_single(&mut input_bam, &mut unique_seqs, &mut output_bam)
+    };
+
+    let total_unique = unique_seqs.len() as u32;
+    let total_duplicated = total - total_unique;
+
+    eprintln!("Total: {}", total);
+    let total = total as f32;
+    eprintln!(
+        "Unique: {} ({:.2} %)",
+        total_unique,
+        total_unique as f32 / total * 100.0
+    );
+    eprintln!(
+        "Duplicates: {} ({:.2} %)",
+        total_duplicated,
+        total_duplicated as f32 / total * 100.0
+    );
+}
+
+fn deduplicate_paired(
+    input_bam: &mut bam::Reader,
+    unique_seqs: &mut HashSet<String>,
+    output_bam: &mut bam::Writer,
+) -> u32 {
+    let mut total = 0;
+
+    let mut record_1 = bam::Record::new();
+    let mut record_2 = bam::Record::new();
+    loop {
+        let result_1 = input_bam.read(&mut record_1);
+        if let Some(result) = result_1 {
+            result.unwrap();
+        } else {
+            break;
+        }
+
+        let result_2 = input_bam.read(&mut record_2);
+        if let Some(result) = result_2 {
+            result.unwrap();
+        } else {
+            panic!(
+                "missing read mate for {}",
+                std::str::from_utf8(record_1.qname()).unwrap()
+            );
+        }
+
+        total += 1;
+
+        let chr = input_bam.header().tid2name(record_1.tid() as u32);
+        let chr = String::from_utf8(chr.to_vec()).unwrap();
+        let mut start = record_1.pos() as u64 + 1;
+        let strand = get_strand(&record_1).unwrap();
+
+        let mut end: u64;
+        if strand == "CTOT" || strand == "OB" {
+            end = start - 1;
+            start = record_2.pos() as u64;
+        } else {
+            end = record_2.pos() as u64 - 1;
+        }
+
+        for c in record_2.cigar().iter() {
+            match c {
+                Cigar::Match(len) | Cigar::Del(len) | Cigar::RefSkip(len) => end += *len as u64,
+                Cigar::Ins(_) | Cigar::SoftClip(_) => {}
+                _ => {
+                    panic!("invalid CIGAR operation: {}", c)
+                }
+            }
+        }
+
+        let id = format!("{}:{}:{}:{}", strand, chr, start, end);
+        if !unique_seqs.contains(&id) {
+            unique_seqs.insert(id);
+
+            output_bam.write(&record_1).unwrap();
+            output_bam.write(&record_2).unwrap();
+        }
+    }
+
+    total
+}
+
+fn deduplicate_single(
+    input_bam: &mut bam::Reader,
+    unique_seqs: &mut HashSet<String>,
+    output_bam: &mut bam::Writer,
+) -> u32 {
+    let mut total = 0;
+
+    let mut record = bam::Record::new();
+    while let Some(result) = input_bam.read(&mut record) {
+        result.unwrap();
+
+        total += 1;
+
+        let chr = input_bam.header().tid2name(record.tid() as u32);
+        let chr = std::str::from_utf8(chr).unwrap();
+        let mut pos = record.pos() as u32 + 1;
+        let strand = get_strand(&record).unwrap();
+
+        if strand == "CTOT" || strand == "OB" {
+            pos -= 1;
+            for c in record.cigar().iter() {
+                match c {
+                    Cigar::Match(len) | Cigar::Del(len) | Cigar::RefSkip(len) => pos += *len,
+                    Cigar::Ins(_) | Cigar::SoftClip(_) => {}
+                    _ => {
+                        panic!("invalid CIGAR operation: {}", c)
+                    }
+                }
+            }
+        }
+
+        let id = format!("{}:{}:{}", strand, chr, pos);
+        if !unique_seqs.contains(&id) {
+            unique_seqs.insert(id);
+
+            output_bam.write(&record).unwrap();
+        }
+    }
+
+    total
+}
+
+fn extract(opts: ExtractOpts) -> () {
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
 
     // Given BAM header, get values from key SN of tags SQ.
@@ -600,6 +776,33 @@ fn is_reverse(record: &bam::Record) -> Result<bool, String> {
     };
 
     Ok((xr == b"CT" && xg == b"GA") || (xr == b"GA" && xg == b"CT"))
+}
+
+fn get_strand(record: &bam::Record) -> Result<&'static str, String> {
+    let xr = match record.aux(b"XR") {
+        Some(value) => value.string(),
+        None => return Err(String::from("missing XR tag")),
+    };
+    let xg = match record.aux(b"XG") {
+        Some(value) => value.string(),
+        None => return Err(String::from("missing XG tag")),
+    };
+
+    return if xr == b"CT" && xg == b"CT" {
+        Ok("OT")
+    } else if xr == b"GA" && xg == b"CT" {
+        Ok("CTOT")
+    } else if xr == b"GA" && xg == b"GA" {
+        Ok("CTOB")
+    } else if xr == b"CT" && xg == b"GA" {
+        Ok("OB")
+    } else {
+        Err(format!(
+            "invalid XR={} or XG={}",
+            std::str::from_utf8(xr).unwrap(),
+            std::str::from_utf8(xg).unwrap()
+        ))
+    };
 }
 
 fn report_read_stats(cr: &CytosineRead) {
