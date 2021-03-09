@@ -186,17 +186,27 @@ fn deduplicate_paired(
         let mut end: u64;
         if strand == "CTOT" || strand == "OB" {
             end = start - 1;
-            start = record_2.pos() as u64;
-        } else {
-            end = record_2.pos() as u64 - 1;
-        }
+            start = record_2.pos() as u64 + 1;
 
-        for c in record_2.cigar().iter() {
-            match c {
-                Cigar::Match(len) | Cigar::Del(len) | Cigar::RefSkip(len) => end += *len as u64,
-                Cigar::Ins(_) | Cigar::SoftClip(_) => {}
-                _ => {
-                    panic!("invalid CIGAR operation: {}", c)
+            for c in record_1.cigar().iter() {
+                match c {
+                    Cigar::Match(len) | Cigar::Del(len) | Cigar::RefSkip(len) => end += *len as u64,
+                    Cigar::Ins(_) | Cigar::SoftClip(_) => {}
+                    _ => {
+                        panic!("invalid CIGAR operation: {}", c)
+                    }
+                }
+            }
+        } else {
+            end = record_2.pos() as u64;
+
+            for c in record_2.cigar().iter() {
+                match c {
+                    Cigar::Match(len) | Cigar::Del(len) | Cigar::RefSkip(len) => end += *len as u64,
+                    Cigar::Ins(_) | Cigar::SoftClip(_) => {}
+                    _ => {
+                        panic!("invalid CIGAR operation: {}", c)
+                    }
                 }
             }
         }
