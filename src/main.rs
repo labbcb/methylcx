@@ -3,7 +3,7 @@ use clap::Clap;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use methylcx::{Clipper, ClipperConfig, CytosineGenome, CytosineRead};
+use methylcx::{ClipperSingle, ClipperSingleConfig, CytosineGenome, CytosineRead};
 use rust_htslib::{
     bam,
     bam::{record::Cigar, Read},
@@ -22,7 +22,8 @@ struct Opts {
 #[derive(Clap)]
 enum SubCommand {
     Deduplicate(DeduplicateOpts),
-    Extract(ExtractOpts),
+    ExtractSingle(ExtractSingleOpts),
+    ExtractPaired(ExtractPairedOpts),
 }
 
 /// Removes duplicated reads while keeping the first one
@@ -43,7 +44,7 @@ struct DeduplicateOpts {
 
 /// Calculates DNA methylation across genome
 #[derive(Clap)]
-struct ExtractOpts {
+struct ExtractSingleOpts {
     /// Input mapped reads by Bismark aligner (BAM/SAM).
     #[clap(parse(from_os_str))]
     input: PathBuf,
@@ -109,12 +110,97 @@ struct ExtractOpts {
     start_capacity: usize,
 }
 
+/// Calculates DNA methylation across genome
+#[derive(Clap)]
+struct ExtractPairedOpts {
+    /// Input mapped reads by Bismark aligner (BAM/SAM).
+    #[clap(parse(from_os_str))]
+    input: PathBuf,
+
+    // /// Clip first bases of aligned sequence in end-to-end mode (forward, 5' orientation).
+    // #[clap(long, default_value = "0")]
+    // five_prime_clip_1: u32,
+    // /// Clip last bases of aligned sequence in end-to-end mode (forward, 3' orientation).
+    // #[clap(long, default_value = "0")]
+    // three_prime_clip_1: u32,
+    // /// Clip first bases of aligned sequence in local mode (forward, 5' orientation).
+    // #[clap(long, default_value = "0")]
+    // five_soft_clip_1: u32,
+    // /// Clip last bases of aligned sequence in local mode (forward, 3' orientation).
+    // #[clap(long, default_value = "0")]
+    // three_soft_clip_1: u32,
+    // /// Minimum read length.
+    // #[clap(long, default_value = "0")]
+    // /// Clip first bases of aligned sequence in end-to-end mode (reverse, 5' orientation).
+    // #[clap(long, default_value = "0")]
+    // five_prime_clip_2: u32,
+    // /// Clip last bases of aligned sequence in end-to-end mode (reverse, 3' orientation).
+    // #[clap(long, default_value = "0")]
+    // three_prime_clip_2: u32,
+    // /// Clip first bases of aligned sequence in local mode (reverse, 5' orientation).
+    // #[clap(long, default_value = "0")]
+    // five_soft_clip_2: u32,
+    // /// Clip last bases of aligned sequence in local mode (reverse, 3' orientation).
+    // #[clap(long, default_value = "0")]
+    // three_soft_clip_2: u32,
+    /// Minimum read length.
+    // #[clap(long, default_value = "0")]
+    // min_length: u32,
+
+    /// Counts of (un)methylated and coverage across cycles (CSV).
+    #[clap(long, parse(from_os_str))]
+    mbias: Option<PathBuf>,
+
+    /// Counts of (un)methylated and coverage across genome in CpG-context (cov, gzipped).
+    #[clap(long, parse(from_os_str))]
+    cpg_bismark_cov: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHG-context (cov, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_bismark_cov: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHH-context (cov, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_bismark_cov: Option<PathBuf>,
+
+    /// Counts of (un)methylated and coverage across genome in CpG-context (bedGraph, gzipped).
+    #[clap(long, parse(from_os_str))]
+    cpg_bed_graph: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHG-context (bedGraph, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_bed_graph: Option<PathBuf>,
+    /// Counts of (un)methylated and coverage across genome in CHH-context (bedGraph, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_bed_graph: Option<PathBuf>,
+
+    /// Minimum coverage to report loci. To output every loci see --cytosine-report.
+    #[clap(long, default_value = "1")]
+    min_coverage: u32,
+
+    /// Strand-specific counts of (un)methylated CpG across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    cpg_cytosine_report: Option<PathBuf>,
+    /// Strand-specific counts of (un)methylated CHG across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chg_cytosine_report: Option<PathBuf>,
+    /// Strand-specific counts of (un)methylated CHH across genome (cytosine-report, gzipped).
+    #[clap(long, parse(from_os_str))]
+    chh_cytosine_report: Option<PathBuf>,
+
+    /// Reference genome file (FASTA format, gzipped). Only required for --cytosine-report.
+    #[clap(long, parse(from_os_str))]
+    genome: Option<PathBuf>,
+
+    /// Starting vector capacity to store per sequencing cycles data.
+    #[clap(long, default_value = "200")]
+    start_capacity: usize,
+}
+
 fn main() {
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
         SubCommand::Deduplicate(opts) => deduplicate(opts),
-        SubCommand::Extract(opts) => extract(opts),
+        SubCommand::ExtractSingle(opts) => extract_single(opts),
+        SubCommand::ExtractPaired(opts) => extract_paired(opts),
     }
 }
 
@@ -265,7 +351,7 @@ fn deduplicate_single(
     total
 }
 
-fn extract(opts: ExtractOpts) -> () {
+fn extract_single(opts: ExtractSingleOpts) -> () {
     let mut bam = bam::Reader::from_path(&opts.input).unwrap();
 
     // Given BAM header, get values from key SN of tags SQ.
@@ -302,13 +388,13 @@ fn extract(opts: ExtractOpts) -> () {
         None
     };
 
-    let config = ClipperConfig {
+    let config = ClipperSingleConfig {
         five_prime_clip: opts.five_prime_clip,
         three_prime_clip: opts.three_prime_clip,
         five_soft_clip: opts.five_soft_clip,
         three_soft_clip: opts.three_soft_clip,
     };
-    let mut clipper = Clipper::new(config);
+    let mut clipper = ClipperSingle::new(config);
 
     // Get statistics about mapped reads.
     let mut total: u32 = 0;
@@ -358,7 +444,7 @@ fn extract(opts: ExtractOpts) -> () {
             task.process(&xm, reverse, &cigar).unwrap();
         }
         if let Some(task) = cytosine_genome.as_mut() {
-            task.process(pos, &chr, &xm, &cigar).unwrap();
+            task.process_single(pos, &chr, &xm, &cigar).unwrap();
         }
     }
 
@@ -463,10 +549,306 @@ fn extract(opts: ExtractOpts) -> () {
         total_removed,
         total_removed as f32 / total as f32 * 100.0
     );
-    write_clipper_stats(&clipper);
+    write_clipper_stats_single(&clipper);
     if let Some(task) = cytosine_read.as_ref() {
         report_read_stats(task);
     }
+}
+
+fn extract_paired(opts: ExtractPairedOpts) -> () {
+    let mut input_bam = bam::Reader::from_path(&opts.input).unwrap();
+
+    // Given BAM header, get values from key SN of tags SQ.
+    let chrs = bam::Header::from_template(input_bam.header())
+        .to_hashmap()
+        .get("SQ")
+        .unwrap()
+        .iter()
+        .map(|c| c.get("SN").unwrap().to_owned())
+        .collect();
+
+    let mut cytosine_read_1 = CytosineRead::new(opts.start_capacity);
+    let mut cytosine_read_2 = CytosineRead::new(opts.start_capacity);
+
+    let run_cytosine_genome = opts.cpg_bismark_cov.is_some()
+        || opts.chg_bismark_cov.is_some()
+        || opts.chh_bismark_cov.is_some()
+        || opts.cpg_bed_graph.is_some()
+        || opts.chg_bed_graph.is_some()
+        || opts.chh_bed_graph.is_some()
+        || opts.cpg_cytosine_report.is_some()
+        || opts.chg_cytosine_report.is_some()
+        || opts.chh_cytosine_report.is_some();
+    let mut cytosine_genome = if run_cytosine_genome {
+        if opts.cpg_cytosine_report.is_some() && opts.genome.is_none() {
+            panic!("mising reference genome file");
+        }
+        Some(CytosineGenome::new(chrs))
+    } else {
+        None
+    };
+
+    // let config = ClipperPairedConfig {
+    //     five_prime_clip_1: opts.five_prime_clip_1,
+    //     three_prime_clip_1: opts.three_prime_clip_1,
+    //     five_soft_clip_1: opts.five_soft_clip_1,
+    //     three_soft_clip_1: opts.three_soft_clip_1,
+
+    //     five_prime_clip_2: opts.five_prime_clip_2,
+    //     three_prime_clip_2: opts.three_prime_clip_2,
+    //     five_soft_clip_2: opts.five_soft_clip_2,
+    //     three_soft_clip_2: opts.three_soft_clip_2,
+    // };
+    // let mut clipper = ClipperPaired::new(config);
+
+    // Get statistics about mapped reads.
+    let mut total: u32 = 0;
+    let mut total_valid: u32 = 0;
+    // let mut total_removed: u32 = 0;
+
+    // let min_length = opts.min_length as usize;
+
+    let mut record_1 = bam::Record::new();
+    let mut record_2 = bam::Record::new();
+    loop {
+        let result_1 = input_bam.read(&mut record_1);
+        if let Some(result) = result_1 {
+            result.unwrap();
+        } else {
+            break;
+        }
+
+        let result_2 = input_bam.read(&mut record_2);
+        if let Some(result) = result_2 {
+            result.unwrap();
+        } else {
+            panic!(
+                "missing read mate for {}",
+                std::str::from_utf8(record_1.qname()).unwrap()
+            );
+        }
+
+        total += 1;
+
+        // Discard records that are unmapped or duplicated.
+        if record_1.is_unmapped()
+            || record_1.is_duplicate()
+            || record_2.is_unmapped()
+            || record_2.is_duplicate()
+        {
+            continue;
+        }
+        total_valid += 1;
+
+        let chr_1 = input_bam.header().tid2name(record_1.tid() as u32);
+        let chr_1 = String::from_utf8(chr_1.to_vec()).unwrap();
+        let start_1 = (record_1.pos() + 1) as u64;
+        let cigar_1 = record_1.cigar().to_vec();
+        let xm_1 = record_1.aux(b"XM").unwrap().string().to_vec();
+        let reverse_1 = is_reverse(&record_1).unwrap();
+
+        let chr_2 = input_bam.header().tid2name(record_2.tid() as u32);
+        let chr_2 = String::from_utf8(chr_2.to_vec()).unwrap();
+        let start_2 = (record_2.pos() + 1) as u64;
+        let cigar_2 = record_2.cigar().to_vec();
+        let xm_2 = record_2.aux(b"XM").unwrap().string().to_vec();
+        let reverse_2 = is_reverse(&record_2).unwrap();
+
+        // match clipper.process(
+        //     cigar_1, start_1, xm_1, reverse_1, cigar_2, start_2, xm_2, reverse_2,
+        // ) {
+        //     Some(((new_cigar_1, new_pos_1, new_xm_1), (new_cigar_2, new_pos_2, new_xm_2))) => {
+        //         cigar_1 = new_cigar_1;
+        //         start_1 = new_pos_1;
+        //         xm_1 = new_xm_1;
+        //         cigar_2 = new_cigar_2;
+        //         start_2 = new_pos_2;
+        //         xm_2 = new_xm_2;
+        //     }
+        //     None => {
+        //         total_removed += 1;
+        //         continue;
+        //     }
+        // }
+
+        // if xm_1.len() < min_length || xm_2.len() < min_length {
+        //     total_removed += 1;
+        //     continue;
+        // }
+
+        cytosine_read_1.process(&xm_1, reverse_1, &cigar_1).unwrap();
+        cytosine_read_2.process(&xm_2, reverse_2, &cigar_2).unwrap();
+
+        if let Some(task) = cytosine_genome.as_mut() {
+            task.process_paired(
+                start_1, &chr_1, &xm_1, &cigar_1, start_2, &chr_2, &xm_2, &cigar_2, reverse_2,
+            )
+            .unwrap();
+        }
+    }
+
+    if let Some(output) = opts.mbias {
+        let mut writer = File::create(output).unwrap();
+        write_mbias_paired(&cytosine_read_1, &cytosine_read_2, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.cpg_bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CpG,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.chg_bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHG,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.chh_bismark_cov {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bismark_cov(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHH,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.cpg_bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CpG,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.chg_bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHG,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.chh_bed_graph {
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_bed_graph(
+            cytosine_genome.as_ref().unwrap(),
+            opts.min_coverage,
+            Context::CHH,
+            &mut writer,
+        )
+        .unwrap();
+    }
+
+    if let Some(output) = opts.cpg_cytosine_report {
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report_cpg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chg_cytosine_report {
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report_chg(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+    }
+
+    if let Some(output) = opts.chh_cytosine_report {
+        let genome = File::open(opts.genome.as_ref().unwrap()).unwrap();
+        let mut writer = GzEncoder::new(File::create(output).unwrap(), Compression::default());
+        write_cytosine_report_chh(cytosine_genome.as_ref().unwrap(), &genome, &mut writer).unwrap();
+    }
+
+    let percent_valid = total_valid as f32 / total as f32 * 100.0;
+    println!("Total:                  {}", total);
+    println!(
+        "Valid:                  {} ({} %)",
+        total_valid, percent_valid
+    );
+
+    // println!(
+    //     "Removed:                {} ({} %)",
+    //     total_removed,
+    //     total_removed as f32 / total as f32 * 100.0
+    // );
+    // write_clipper_stats_paired(&clipper);
+    report_read_stats(&cytosine_read_1);
+}
+
+fn write_mbias_paired(
+    cytosine_read_1: &CytosineRead,
+    cytosine_read_2: &CytosineRead,
+    writer: &mut File,
+) -> io::Result<()> {
+    writer.write_all(b"Strand,Context,Cycle,Methylated,Unmethylated,Coverage\n")?;
+    for (i, (m, um)) in cytosine_read_1
+        .cpg_m()
+        .iter()
+        .zip(cytosine_read_1.cpg_u())
+        .enumerate()
+    {
+        writeln!(writer, "Forward,CpG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read_1
+        .chg_m()
+        .iter()
+        .zip(cytosine_read_1.chg_u())
+        .enumerate()
+    {
+        writeln!(writer, "Forward,CHG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read_1
+        .chh_m()
+        .iter()
+        .zip(cytosine_read_1.chh_u())
+        .enumerate()
+    {
+        writeln!(writer, "Forward,CHH,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+
+    for (i, (m, um)) in cytosine_read_2
+        .cpg_m()
+        .iter()
+        .zip(cytosine_read_2.cpg_u())
+        .enumerate()
+    {
+        writeln!(writer, "Reverse,CpG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read_2
+        .chg_m()
+        .iter()
+        .zip(cytosine_read_2.chg_u())
+        .enumerate()
+    {
+        writeln!(writer, "Reverse,CHG,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+    for (i, (m, um)) in cytosine_read_2
+        .chh_m()
+        .iter()
+        .zip(cytosine_read_2.chh_u())
+        .enumerate()
+    {
+        writeln!(writer, "Reverse,CHH,{},{},{},{}", i + 1, m, um, m + um)?;
+    }
+
+    Ok(())
 }
 
 #[derive(PartialEq)]
@@ -498,7 +880,7 @@ impl Context {
     }
 }
 
-fn write_clipper_stats(clipper: &Clipper) {
+fn write_clipper_stats_single(clipper: &ClipperSingle) {
     let total = clipper.total() as f32;
     println!(
         "M:                      {} ({:.2} %)",
@@ -521,6 +903,30 @@ fn write_clipper_stats(clipper: &Clipper) {
         clipper.total_sms() as f32 / total * 100.0
     );
 }
+
+// fn write_clipper_stats_paired(clipper: &ClipperPaired) {
+//     let total = clipper.total() as f32;
+//     println!(
+//         "M:                      {} ({:.2} %)",
+//         clipper.total_m(),
+//         clipper.total_m() as f32 / total * 100.0
+//     );
+//     println!(
+//         "SM:                     {} ({:.2} %)",
+//         clipper.total_sm(),
+//         clipper.total_sm() as f32 / total * 100.0
+//     );
+//     println!(
+//         "MS:                     {} ({:.2} %)",
+//         clipper.total_ms(),
+//         clipper.total_ms() as f32 / total * 100.0
+//     );
+//     println!(
+//         "SMS:                    {} ({:.2} %)",
+//         clipper.total_sms(),
+//         clipper.total_sms() as f32 / total * 100.0
+//     );
+// }
 
 fn write_cytosine_report_cpg(
     cytosine_genome: &CytosineGenome,
