@@ -3,6 +3,6 @@ WORKDIR /usr/src/methylcx
 COPY . .
 RUN cargo install --path .
 
-FROM debian:buster-slim
+FROM ubuntu:focal
 COPY --from=builder /usr/local/cargo/bin/methylcx /usr/local/bin/methylcx
 CMD ["methylcx"]
