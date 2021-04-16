@@ -87,7 +87,7 @@ struct ExtractSingleOpts {
     #[clap(long, parse(from_os_str))]
     chh_bed_graph: Option<PathBuf>,
 
-    /// Minimum coverage to report loci. To output every loci see --cytosine-report.
+    /// Minimum coverage to report loci. To output every loci see cytosine-report.
     #[clap(long, default_value = "1")]
     min_coverage: u32,
 
@@ -101,7 +101,7 @@ struct ExtractSingleOpts {
     #[clap(long, parse(from_os_str))]
     chh_cytosine_report: Option<PathBuf>,
 
-    /// Reference genome file (FASTA format, gzipped). Only required for --cytosine-report.
+    /// Reference genome file (FASTA format, gzipped). Only required for cytosine-report.
     #[clap(long, parse(from_os_str))]
     genome: Option<PathBuf>,
 
@@ -171,7 +171,7 @@ struct ExtractPairedOpts {
     #[clap(long, parse(from_os_str))]
     chh_bed_graph: Option<PathBuf>,
 
-    /// Minimum coverage to report loci. To output every loci see --cytosine-report.
+    /// Minimum coverage to report loci. To output every loci see cytosine-report.
     #[clap(long, default_value = "1")]
     min_coverage: u32,
 
@@ -185,7 +185,7 @@ struct ExtractPairedOpts {
     #[clap(long, parse(from_os_str))]
     chh_cytosine_report: Option<PathBuf>,
 
-    /// Reference genome file (FASTA format, gzipped). Only required for --cytosine-report.
+    /// Reference genome file (FASTA format, gzipped). Only required for cytosine-report.
     #[clap(long, parse(from_os_str))]
     genome: Option<PathBuf>,
 
@@ -1017,7 +1017,7 @@ fn write_cytosine_report_chg(
 
             writeln!(
                 writer,
-                "{}\t{}\t+\t{}\t{}\tCG\t{}",
+                "{}\t{}\t+\t{}\t{}\tCHG\t{}",
                 id,
                 pos,
                 m,
@@ -1029,7 +1029,7 @@ fn write_cytosine_report_chg(
 
             writeln!(
                 writer,
-                "{}\t{}\t-\t{}\t{}\tCG\t{}",
+                "{}\t{}\t-\t{}\t{}\tCHG\t{}",
                 id,
                 pos + 1,
                 m,
