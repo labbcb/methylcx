@@ -1,9 +1,13 @@
+mod clip;
+mod extract;
+
 use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
+use clip::{ClipperSingle, ClipperSingleConfig};
+use extract::{CytosineGenome, CytosineRead};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use methylcx::{ClipperSingle, ClipperSingleConfig, CytosineGenome, CytosineRead};
 use rust_htslib::{
     bam,
     bam::{record::Cigar, Read},
