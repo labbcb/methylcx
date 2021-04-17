@@ -1,21 +1,23 @@
 mod clip;
 mod extract;
+mod mbias;
 
-use bio::{alphabets::dna, io::fasta};
 use clap::Clap;
 use clip::{ClipperSingle, ClipperSingleConfig};
-use extract::{CytosineGenome, CytosineRead};
-use flate2::read::GzDecoder;
+use extract::{
+    write_bed_graph, write_bismark_cov, write_cytosine_report_chg, write_cytosine_report_chh,
+    write_cytosine_report_cpg, Context, CytosineGenome,
+};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use mbias::{write_mbias_paired, write_mbias_single, CytosineRead};
 use rust_htslib::{
     bam,
     bam::{record::Cigar, Read},
 };
-use std::io::Write;
+use std::fs::File;
 use std::path::PathBuf;
 use std::{collections::HashSet, usize};
-use std::{fs::File, io};
 
 #[derive(Clap)]
 struct Opts {
@@ -454,7 +456,7 @@ fn extract_single(opts: ExtractSingleOpts) -> () {
 
     if let Some(output) = opts.mbias {
         let mut writer = File::create(output).unwrap();
-        write_mbias(cytosine_read.as_ref().unwrap(), &mut writer).unwrap();
+        write_mbias_single(cytosine_read.as_ref().unwrap(), &mut writer).unwrap();
     }
 
     if let Some(output) = opts.cpg_bismark_cov {
@@ -796,94 +798,6 @@ fn extract_paired(opts: ExtractPairedOpts) -> () {
     report_read_stats(&cytosine_read_1);
 }
 
-fn write_mbias_paired(
-    cytosine_read_1: &CytosineRead,
-    cytosine_read_2: &CytosineRead,
-    writer: &mut File,
-) -> io::Result<()> {
-    writer.write_all(b"Strand,Context,Cycle,Methylated,Unmethylated,Coverage\n")?;
-    for (i, (m, um)) in cytosine_read_1
-        .cpg_m()
-        .iter()
-        .zip(cytosine_read_1.cpg_u())
-        .enumerate()
-    {
-        writeln!(writer, "Forward,CpG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read_1
-        .chg_m()
-        .iter()
-        .zip(cytosine_read_1.chg_u())
-        .enumerate()
-    {
-        writeln!(writer, "Forward,CHG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read_1
-        .chh_m()
-        .iter()
-        .zip(cytosine_read_1.chh_u())
-        .enumerate()
-    {
-        writeln!(writer, "Forward,CHH,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-
-    for (i, (m, um)) in cytosine_read_2
-        .cpg_m()
-        .iter()
-        .zip(cytosine_read_2.cpg_u())
-        .enumerate()
-    {
-        writeln!(writer, "Reverse,CpG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read_2
-        .chg_m()
-        .iter()
-        .zip(cytosine_read_2.chg_u())
-        .enumerate()
-    {
-        writeln!(writer, "Reverse,CHG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read_2
-        .chh_m()
-        .iter()
-        .zip(cytosine_read_2.chh_u())
-        .enumerate()
-    {
-        writeln!(writer, "Reverse,CHH,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-
-    Ok(())
-}
-
-#[derive(PartialEq)]
-enum Context {
-    CpG,
-    CHG,
-    CHH,
-}
-
-impl Context {
-    fn parse(triplet: &[u8]) -> Option<Context> {
-        if triplet[0] != b'C' && triplet[0] != b'c' {
-            None
-        } else if triplet[1] == b'G' || triplet[1] == b'g' {
-            Some(Context::CpG)
-        } else if triplet[2] == b'G' || triplet[2] == b'g' {
-            Some(Context::CHG)
-        } else {
-            Some(Context::CHH)
-        }
-    }
-
-    // TODO: could be `Context::parse(triplet).contains(context)`?
-    fn is(triplet: &[u8], context: Context) -> bool {
-        match Context::parse(triplet) {
-            Some(ctx) => ctx == context,
-            None => false,
-        }
-    }
-}
-
 fn write_clipper_stats_single(clipper: &ClipperSingle) {
     let total = clipper.total() as f32;
     println!(
@@ -931,253 +845,6 @@ fn write_clipper_stats_single(clipper: &ClipperSingle) {
 //         clipper.total_sms() as f32 / total * 100.0
 //     );
 // }
-
-fn write_cytosine_report_cpg(
-    cytosine_genome: &CytosineGenome,
-    genome: &File,
-    writer: &mut GzEncoder<File>,
-) -> io::Result<()> {
-    let reader = fasta::Reader::new(GzDecoder::new(genome));
-
-    let mut records = reader.records();
-    while let Some(Ok(record)) = records.next() {
-        let id = record.id();
-        let seq = record.seq();
-
-        let cpg = match cytosine_genome.cpg().get(id) {
-            Some(value) => value,
-            None => {
-                continue;
-            }
-        };
-
-        let mut pos = 0;
-        for idx in 0..seq.len() - 2 {
-            pos += 1;
-
-            if !((seq[idx] == b'C' || seq[idx] == b'c')
-                && (seq[idx + 1] == b'G' || seq[idx + 1] == b'g'))
-            {
-                continue;
-            }
-
-            let (m, u, _) = cpg.get(&pos).unwrap_or(&(0, 0, 0));
-
-            writeln!(
-                writer,
-                "{}\t{}\t+\t{}\t{}\tCG\t{}",
-                id,
-                pos,
-                m,
-                u,
-                std::str::from_utf8(&seq[idx..idx + 3]).unwrap()
-            )?;
-
-            let (m, u, _) = cpg.get(&(pos + 1)).unwrap_or(&(0, 0, 0));
-
-            writeln!(
-                writer,
-                "{}\t{}\t-\t{}\t{}\tCG\t{}",
-                id,
-                pos + 1,
-                m,
-                u,
-                std::str::from_utf8(&dna::revcomp(&seq[idx - 1..idx + 2])).unwrap()
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn write_cytosine_report_chg(
-    cytosine_genome: &CytosineGenome,
-    genome: &File,
-    writer: &mut GzEncoder<File>,
-) -> io::Result<()> {
-    let reader = fasta::Reader::new(GzDecoder::new(genome));
-    let mut records = reader.records();
-    while let Some(Ok(record)) = records.next() {
-        let id = record.id();
-        let seq = record.seq();
-
-        let chg = match cytosine_genome.chg().get(id) {
-            Some(value) => value,
-            None => {
-                continue;
-            }
-        };
-
-        let mut pos = 0;
-        for idx in 0..seq.len() - 2 {
-            pos += 1;
-
-            let triplet = &seq[idx..idx + 3];
-            if !Context::is(triplet, Context::CHG) {
-                continue;
-            }
-
-            let (m, u, _) = chg.get(&pos).unwrap_or(&(0, 0, 0));
-
-            writeln!(
-                writer,
-                "{}\t{}\t+\t{}\t{}\tCHG\t{}",
-                id,
-                pos,
-                m,
-                u,
-                std::str::from_utf8(triplet).unwrap()
-            )?;
-
-            let (m, u, _) = chg.get(&(pos + 2)).unwrap_or(&(0, 0, 0));
-
-            writeln!(
-                writer,
-                "{}\t{}\t-\t{}\t{}\tCHG\t{}",
-                id,
-                pos + 1,
-                m,
-                u,
-                std::str::from_utf8(&dna::revcomp(triplet)).unwrap()
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn write_cytosine_report_chh(
-    cytosine_genome: &CytosineGenome,
-    genome: &File,
-    writer: &mut GzEncoder<File>,
-) -> io::Result<()> {
-    let reader = fasta::Reader::new(GzDecoder::new(genome));
-    let mut records = reader.records();
-    while let Some(Ok(record)) = records.next() {
-        let id = record.id();
-        let seq = record.seq();
-
-        let chh = match cytosine_genome.chh().get(id) {
-            Some(value) => value,
-            None => {
-                continue;
-            }
-        };
-
-        let mut pos = 0;
-        for triplet in seq.windows(3) {
-            pos += 1;
-
-            let triplet_rev = dna::revcomp(triplet);
-            let (pos, strand, triplet) = if Context::is(triplet, Context::CHH) {
-                (pos, "+", triplet)
-            } else if Context::is(&triplet_rev, Context::CHH) {
-                (pos + 2, "-", triplet_rev.as_slice())
-            } else {
-                continue;
-            };
-
-            let (m, u, _) = chh.get(&pos).unwrap_or(&(0, 0, 0));
-
-            writeln!(
-                writer,
-                "{}\t{}\t{}\t{}\t{}\tCHH\t{}",
-                id,
-                pos,
-                strand,
-                m,
-                u,
-                std::str::from_utf8(triplet).unwrap()
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-// Print result tables in CSV format to stdout.
-// Tables are merged as long format and discriminated by `Context` column.
-fn write_mbias(cytosine_read: &CytosineRead, writer: &mut File) -> io::Result<()> {
-    writer.write_all(b"Context,Cycle,Methylated,Unmethylated,Coverage\n")?;
-    for (i, (m, um)) in cytosine_read
-        .cpg_m()
-        .iter()
-        .zip(cytosine_read.cpg_u())
-        .enumerate()
-    {
-        writeln!(writer, "CpG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read
-        .chg_m()
-        .iter()
-        .zip(cytosine_read.chg_u())
-        .enumerate()
-    {
-        writeln!(writer, "CHG,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    for (i, (m, um)) in cytosine_read
-        .chh_m()
-        .iter()
-        .zip(cytosine_read.chh_u())
-        .enumerate()
-    {
-        writeln!(writer, "CHH,{},{},{},{}", i + 1, m, um, m + um)?;
-    }
-    Ok(())
-}
-
-fn write_bed_graph(
-    cytosine_genome: &CytosineGenome,
-    min_coverage: u32,
-    context: Context,
-    writer: &mut GzEncoder<File>,
-) -> io::Result<()> {
-    assert_ne!(min_coverage, 0, "min_coverage must be larger than 0");
-
-    let map = match context {
-        Context::CpG => cytosine_genome.cpg(),
-        Context::CHG => cytosine_genome.chg(),
-        Context::CHH => cytosine_genome.chh(),
-    };
-    writer.write_all(b"track type=bedGraph\n")?;
-    for chr in cytosine_genome.chrs() {
-        let xs = map.get(chr).unwrap();
-        for (pos, (m, _, cov)) in xs {
-            if *cov < min_coverage {
-                continue;
-            }
-            let perc = *m as f64 / *cov as f64 * 100.0;
-            writeln!(writer, "{}\t{}\t{}\t{}", chr, pos - 1, pos, perc)?;
-        }
-    }
-    Ok(())
-}
-
-fn write_bismark_cov(
-    cytosine_genome: &CytosineGenome,
-    min_coverage: u32,
-    context: Context,
-    writer: &mut GzEncoder<File>,
-) -> io::Result<()> {
-    assert_ne!(min_coverage, 0, "min_coverage must be larger than 0");
-
-    let map = match context {
-        Context::CpG => cytosine_genome.cpg(),
-        Context::CHG => cytosine_genome.chg(),
-        Context::CHH => cytosine_genome.chh(),
-    };
-    for chr in cytosine_genome.chrs() {
-        let xs = map.get(chr).unwrap();
-        for (pos, (m, u, cov)) in xs {
-            if *cov < min_coverage {
-                continue;
-            }
-            let perc = *m as f64 / *cov as f64 * 100.0;
-            writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}", chr, pos, pos, perc, m, u)?;
-        }
-    }
-    return Ok(());
-}
 
 // Get Bismark tags about read conversion (XR) and genome conversion (XG)
 // XR=CT and XG=CT -> original top strand (OT)
