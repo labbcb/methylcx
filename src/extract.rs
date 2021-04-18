@@ -321,183 +321,6 @@ fn end_cigar(start: u64, cigar: &[Cigar]) -> u64 {
     end
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn process_paired() {
-        let chrs = vec![String::from("15")];
-        let mut citosyne_genome = CytosineGenome::new(chrs);
-
-        let pos_1 = 59205706;
-        let chr_1 = String::from("15");
-        let xm_1 = "HhH..HhH..x..h..x..h.h.....xh..x...xh..hh....x..x....Z......x.......x.......h...................x.hh.......hhhh.h.....h.h...........................";
-        let cigar_1 = vec![Cigar::Match(7), Cigar::Del(3), Cigar::Match(141)]; // 7M3D141M
-
-        let pos_2 = 59205706;
-        let chr_2 = String::from("15");
-        let xm_2 = "HhH..HhH..x..h..x..h.h.....xh..x...xh..hh....x..x....Z......x.......x.......h...................x.hh.......hhhh.h.....h.h...........................";
-        let cigar_2 = vec![Cigar::Match(7), Cigar::Del(3), Cigar::Match(141)]; // 7M3D141M
-
-        let reverse_2 = false;
-
-        citosyne_genome
-            .process_paired(
-                pos_1,
-                &chr_1,
-                xm_1.as_bytes(),
-                &cigar_1,
-                pos_2,
-                &chr_2,
-                xm_2.as_bytes(),
-                &cigar_2,
-                reverse_2,
-            )
-            .unwrap();
-
-        let pos = 59205762 as u64;
-        let (m, u, cov) = citosyne_genome.cpg().get("15").unwrap().get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-    }
-
-    #[test]
-    fn process_paired_2() {
-        let chrs = vec![String::from("10")];
-        let mut citosyne_genome = CytosineGenome::new(chrs);
-
-        let start_1 = 20706917;
-        let chr_1 = String::from("10");
-        let xm_1 = "x..x....h...h....h..................h...h.h.hh.......z.....x....z.hh....x.h...................................x....hhh...h.........x..x...h.....Zx..Z".as_bytes();
-        let cigar_1 = vec![Cigar::Match(149)]; // 149M
-
-        let start_2 = 20706906;
-        let chr_2 = String::from("10");
-        let xm_2 = "H......h...x..x....h...h....h..................h...h.h.hh.......z.....x....z.hh....x.h...................................x....hhh...h.........x..x...h".as_bytes();
-        let cigar_2 = vec![Cigar::Match(150)]; // 150M
-
-        let reverse_2 = false;
-
-        citosyne_genome
-            .process_paired(
-                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
-            )
-            .unwrap();
-
-        let cpg = citosyne_genome.cpg().get("10").unwrap();
-
-        let pos = 20706970 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (0, 1, 1));
-
-        let pos = 20706981 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (0, 1, 1));
-
-        let pos = 20707061 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-
-        let pos = 20707065 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-    }
-
-    #[test]
-    fn process_paired_overlap() {
-        let chrs = vec![String::from("10")];
-        let mut citosyne_genome = CytosineGenome::new(chrs);
-
-        let start_1 = 42092485;
-        let chr_1 = String::from("10");
-        let xm_1 = ".z...hh........hh.......h...Zx....h...hh....Z.....Z...h....h...h........Z...hh....Z...hh..............hh...hh....h.......z....h....Zx..hh..........Z...".as_bytes();
-        let cigar_1 = vec![Cigar::Match(151)]; // 151M
-
-        let start_2 = 42092585;
-        let chr_2 = String::from("10");
-        let xm_2 = "...uU...HH...hh.......Z....h....Zx..hh..........Z...hh........hh..............Zx........Zx.......Z...hh....Z..h.h.......Z...hh....Z...hh...........h..".as_bytes();
-        let cigar_2 = vec![Cigar::Match(2), Cigar::Ins(1), Cigar::Match(147)]; // 2M1I147M
-
-        let reverse_2 = false;
-
-        citosyne_genome
-            .process_paired(
-                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
-            )
-            .unwrap();
-
-        let cpg = citosyne_genome.cpg().get("10").unwrap();
-
-        assert_eq!(cpg.len(), 9);
-
-        let pos = 42092486 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (0, 1, 1));
-        let pos = 42092513 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092529 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092535 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092557 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092567 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092606 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (0, 1, 1));
-        let pos = 42092616 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 42092632 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-    }
-
-    #[test]
-    fn process_paired_reverse() {
-        let chrs = vec![String::from("10")];
-        let mut citosyne_genome = CytosineGenome::new(chrs);
-
-        let start_1 = 100110304;
-        let chr_1 = String::from("10");
-        let xm_1 = "....hh..........h.h.......................h..h...x......x.....h.h.Z.hx......hhx..h...........hh....hx.......h.hx......x.......Z....hx..hx...hh.........".as_bytes();
-        let cigar_1 = vec![Cigar::Match(151)]; // 151M
-
-        let start_2 = 100110405;
-        let chr_2 = String::from("10");
-        let xm_2 = ".......h.hx......x.......Z....hx..hx...hh............hhhh..h.h..h........h.........x....Z.......x...h.hx......hhx..h..h.x......x.....x.........H...HX.".as_bytes();
-        let cigar_2 = vec![Cigar::Match(146), Cigar::Del(2), Cigar::Match(4)]; // 146M2D4M
-
-        let reverse_2 = true;
-
-        citosyne_genome
-            .process_paired(
-                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
-            )
-            .unwrap();
-
-        let cpg = citosyne_genome.cpg().get("10").unwrap();
-
-        assert_eq!(cpg.len(), 3);
-
-        let pos = 100110370 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 100110430 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-        let pos = 100110493 as u64;
-        let (m, u, cov) = cpg.get(&pos).unwrap();
-        assert_eq!((*m, *u, *cov), (1, 0, 1));
-    }
-}
-
 pub fn write_cytosine_report_cpg(
     cytosine_genome: &CytosineGenome,
     genome: &File,
@@ -712,4 +535,181 @@ pub fn write_bismark_cov(
         }
     }
     return Ok(());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_paired() {
+        let chrs = vec![String::from("15")];
+        let mut citosyne_genome = CytosineGenome::new(chrs);
+
+        let pos_1 = 59205706;
+        let chr_1 = String::from("15");
+        let xm_1 = "HhH..HhH..x..h..x..h.h.....xh..x...xh..hh....x..x....Z......x.......x.......h...................x.hh.......hhhh.h.....h.h...........................";
+        let cigar_1 = vec![Cigar::Match(7), Cigar::Del(3), Cigar::Match(141)]; // 7M3D141M
+
+        let pos_2 = 59205706;
+        let chr_2 = String::from("15");
+        let xm_2 = "HhH..HhH..x..h..x..h.h.....xh..x...xh..hh....x..x....Z......x.......x.......h...................x.hh.......hhhh.h.....h.h...........................";
+        let cigar_2 = vec![Cigar::Match(7), Cigar::Del(3), Cigar::Match(141)]; // 7M3D141M
+
+        let reverse_2 = false;
+
+        citosyne_genome
+            .process_paired(
+                pos_1,
+                &chr_1,
+                xm_1.as_bytes(),
+                &cigar_1,
+                pos_2,
+                &chr_2,
+                xm_2.as_bytes(),
+                &cigar_2,
+                reverse_2,
+            )
+            .unwrap();
+
+        let pos = 59205762 as u64;
+        let (m, u, cov) = citosyne_genome.cpg().get("15").unwrap().get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+    }
+
+    #[test]
+    fn process_paired_2() {
+        let chrs = vec![String::from("10")];
+        let mut citosyne_genome = CytosineGenome::new(chrs);
+
+        let start_1 = 20706917;
+        let chr_1 = String::from("10");
+        let xm_1 = "x..x....h...h....h..................h...h.h.hh.......z.....x....z.hh....x.h...................................x....hhh...h.........x..x...h.....Zx..Z".as_bytes();
+        let cigar_1 = vec![Cigar::Match(149)]; // 149M
+
+        let start_2 = 20706906;
+        let chr_2 = String::from("10");
+        let xm_2 = "H......h...x..x....h...h....h..................h...h.h.hh.......z.....x....z.hh....x.h...................................x....hhh...h.........x..x...h".as_bytes();
+        let cigar_2 = vec![Cigar::Match(150)]; // 150M
+
+        let reverse_2 = false;
+
+        citosyne_genome
+            .process_paired(
+                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
+            )
+            .unwrap();
+
+        let cpg = citosyne_genome.cpg().get("10").unwrap();
+
+        let pos = 20706970 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (0, 1, 1));
+
+        let pos = 20706981 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (0, 1, 1));
+
+        let pos = 20707061 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+
+        let pos = 20707065 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+    }
+
+    #[test]
+    fn process_paired_overlap() {
+        let chrs = vec![String::from("10")];
+        let mut citosyne_genome = CytosineGenome::new(chrs);
+
+        let start_1 = 42092485;
+        let chr_1 = String::from("10");
+        let xm_1 = ".z...hh........hh.......h...Zx....h...hh....Z.....Z...h....h...h........Z...hh....Z...hh..............hh...hh....h.......z....h....Zx..hh..........Z...".as_bytes();
+        let cigar_1 = vec![Cigar::Match(151)]; // 151M
+
+        let start_2 = 42092585;
+        let chr_2 = String::from("10");
+        let xm_2 = "...uU...HH...hh.......Z....h....Zx..hh..........Z...hh........hh..............Zx........Zx.......Z...hh....Z..h.h.......Z...hh....Z...hh...........h..".as_bytes();
+        let cigar_2 = vec![Cigar::Match(2), Cigar::Ins(1), Cigar::Match(147)]; // 2M1I147M
+
+        let reverse_2 = false;
+
+        citosyne_genome
+            .process_paired(
+                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
+            )
+            .unwrap();
+
+        let cpg = citosyne_genome.cpg().get("10").unwrap();
+
+        assert_eq!(cpg.len(), 9);
+
+        let pos = 42092486 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (0, 1, 1));
+        let pos = 42092513 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092529 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092535 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092557 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092567 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092606 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (0, 1, 1));
+        let pos = 42092616 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 42092632 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+    }
+
+    #[test]
+    fn process_paired_reverse() {
+        let chrs = vec![String::from("10")];
+        let mut citosyne_genome = CytosineGenome::new(chrs);
+
+        let start_1 = 100110304;
+        let chr_1 = String::from("10");
+        let xm_1 = "....hh..........h.h.......................h..h...x......x.....h.h.Z.hx......hhx..h...........hh....hx.......h.hx......x.......Z....hx..hx...hh.........".as_bytes();
+        let cigar_1 = vec![Cigar::Match(151)]; // 151M
+
+        let start_2 = 100110405;
+        let chr_2 = String::from("10");
+        let xm_2 = ".......h.hx......x.......Z....hx..hx...hh............hhhh..h.h..h........h.........x....Z.......x...h.hx......hhx..h..h.x......x.....x.........H...HX.".as_bytes();
+        let cigar_2 = vec![Cigar::Match(146), Cigar::Del(2), Cigar::Match(4)]; // 146M2D4M
+
+        let reverse_2 = true;
+
+        citosyne_genome
+            .process_paired(
+                start_1, &chr_1, xm_1, &cigar_1, start_2, &chr_2, xm_2, &cigar_2, reverse_2,
+            )
+            .unwrap();
+
+        let cpg = citosyne_genome.cpg().get("10").unwrap();
+
+        assert_eq!(cpg.len(), 3);
+
+        let pos = 100110370 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 100110430 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+        let pos = 100110493 as u64;
+        let (m, u, cov) = cpg.get(&pos).unwrap();
+        assert_eq!((*m, *u, *cov), (1, 0, 1));
+    }
 }

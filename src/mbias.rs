@@ -59,16 +59,6 @@ impl Context {
     }
 }
 
-// . for bases not involving cytosines
-// X for methylated C in CHG context (was protected)
-// x for not methylated C in CHG context (was converted)
-// H for methylated C in CHH context (was protected)
-// h for not methylated C in CHH context (was converted)
-// Z for methylated C in CpG context (was protected)
-// z for not methylated C in CpG context (was converted)
-// U for methylated C in Unknown context (was protected)
-// u for not methylated C in Unknown context (was converted)
-
 pub struct CytosineRead {
     max_len: usize,
     cpg: Context,
